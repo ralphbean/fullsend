@@ -232,6 +232,7 @@ export default defineConfig({
             { text: "fullsend agent", link: "/cli/agent" },
             { text: "fullsend github", link: "/cli/github" },
             { text: "fullsend inference", link: "/cli/inference" },
+            { text: "fullsend k8s-poc", link: "/cli/k8s-poc" },
             { text: "fullsend mint", link: "/cli/mint" },
             { text: "fullsend repos", link: "/cli/repos" },
             { text: "fullsend run", link: "/cli/run" },

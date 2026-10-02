@@ -6,6 +6,7 @@ This guide provides implementation details for fullsend CLI internals: command s
 
 ```
 fullsend
+├── k8s-poc                                  # Local fixture/Jira poll, PostgreSQL, and kind Job dispatch demo
 ├── admin                                    # All-in-one setup (GCP + GitHub)
 │   ├── install      <org|owner/repo>        # Full infrastructure setup
 │   ├── uninstall    <org>                   # Tear down (reverse layer order)

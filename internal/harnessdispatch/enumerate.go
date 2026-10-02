@@ -38,6 +38,17 @@ type TriggeredHarness struct {
 // returned so a fully-unreadable harness set is not indistinguishable from
 // "no trigger matched".
 func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.ConfigReader, fetchPolicy *fetch.FetchPolicy) ([]TriggeredHarness, error) {
+	return listTriggeredHarnesses(ctx, configDir, cfg, fetchPolicy, false)
+}
+
+// ListTriggeredHarnessesStrict rejects a partial harness set. It is used
+// when preparing an immutable dispatch revision, where skipping a broken
+// harness could make its future events appear to have no matching trigger.
+func ListTriggeredHarnessesStrict(ctx context.Context, configDir string, cfg config.ConfigReader, fetchPolicy *fetch.FetchPolicy) ([]TriggeredHarness, error) {
+	return listTriggeredHarnesses(ctx, configDir, cfg, fetchPolicy, true)
+}
+
+func listTriggeredHarnesses(ctx context.Context, configDir string, cfg config.ConfigReader, fetchPolicy *fetch.FetchPolicy, strict bool) ([]TriggeredHarness, error) {
 	registered, err := harness.RegisteredAgents(cfg)
 	if err != nil {
 		return nil, err
@@ -100,7 +111,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	// that produced them, while the aggregated error drives dispatch's
 	// non-zero exit and appears in the plain-text CI log/exit trace. Partial
 	// failures (loaded > 0) keep the annotation-only behavior unchanged.
-	if loaded == 0 && len(loadErrs) > 0 {
+	if len(loadErrs) > 0 && (strict || loaded == 0) {
 		return nil, fmt.Errorf("no agents could be loaded: %w", errors.Join(loadErrs...))
 	}
 	return out, nil

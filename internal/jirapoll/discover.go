@@ -31,6 +31,9 @@ func parseJiraTimestamp(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("unparseable Jira timestamp: %q", s)
 }
 
+// ParseJiraTimestamp parses the timestamp format used by Jira Cloud issues.
+func ParseJiraTimestamp(s string) (time.Time, error) { return parseJiraTimestamp(s) }
+
 // changeResult bundles the events detected by detectChanges together with the
 // latest observed timestamp across all comments and changelog entries,
 // regardless of whether they produced routable events.

@@ -1,0 +1,11 @@
+{
+  "tenant": "fixture-tenant",
+  "source": "fixture-source",
+  "cursor": "fixture-v1",
+  "observations": [
+    {"key":"issue-1-v1","entity":"issue-1","revision":"1","kind":"opened","behavior":"success","authorized":true},
+    {"key":"issue-2-v1","entity":"issue-2","revision":"1","kind":"opened","behavior":"failure","authorized":true},
+    {"key":"issue-3-v1","entity":"issue-3","revision":"1","kind":"ignored","behavior":"success","authorized":true},
+    {"key":"issue-4-v1","entity":"issue-4","revision":"1","kind":"opened","behavior":"success","authorized":false}
+  ]
+}

@@ -86,6 +86,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
 	cmd.AddCommand(newPollCmd())
+	cmd.AddCommand(newK8sPoCCmd())
 	cmd.AddCommand(newEvalMeasureCmd())
 	cmd.AddCommand(newResolveMRSourceCmd())
 	cmd.AddCommand(newCheckProtectedBranchCmd())

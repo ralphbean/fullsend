@@ -1,0 +1,3 @@
+resources:
+  - ../../base/infrastructure
+  - ../../base/live-control-plane

@@ -1,0 +1,108 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jira-poller
+  namespace: fullsend-control
+spec:
+  schedule: "* * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 50
+      template:
+        spec:
+          serviceAccountName: control
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: poller
+              image: localhost/fullsend-poc:dev
+              imagePullPolicy: Never
+              args: ["k8s-poc", "poll-jira"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 25m, memory: 32Mi}
+                limits: {memory: 128Mi}
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef: {name: postgres-auth, key: url}
+              volumeMounts:
+                - {name: selection, mountPath: /etc/fullsend, readOnly: true}
+                - {name: jira-auth, mountPath: /var/run/secrets/jira, readOnly: true}
+          volumes:
+            - name: selection
+              configMap: {name: jira-live-selection}
+            - name: jira-auth
+              secret:
+                secretName: jira-live-auth
+                items:
+                  - {key: token, path: token}
+                  - {key: email, path: email}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jira-dispatcher
+  namespace: fullsend-control
+spec:
+  schedule: "* * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 50
+      template:
+        spec:
+          serviceAccountName: control
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: dispatcher
+              image: localhost/fullsend-poc:dev
+              imagePullPolicy: Never
+              args: ["k8s-poc", "dispatch"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 25m, memory: 32Mi}
+                limits: {memory: 128Mi}
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef: {name: postgres-auth, key: url}
+                - {name: JIRA_TOKEN_FILE, value: /var/run/secrets/jira/token}
+                - {name: JIRA_EMAIL_FILE, value: /var/run/secrets/jira/email}
+                - {name: STUB_IMAGE, value: "registry.access.redhat.com/ubi10/ubi-minimal:10.2-1790075626"}
+              volumeMounts:
+                - {name: jira-auth, mountPath: /var/run/secrets/jira, readOnly: true}
+          volumes:
+            - name: jira-auth
+              secret:
+                secretName: jira-live-auth
+                items:
+                  - {key: token, path: token}
+                  - {key: email, path: email}

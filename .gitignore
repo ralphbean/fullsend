@@ -25,5 +25,7 @@ docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
 coverage.out
+k8s/.local/
+k8s/.state/
 # QualityFlow working directory; nothing under it belongs in a commit.
 outputs/
