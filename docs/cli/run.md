@@ -26,10 +26,13 @@ fullsend run <agent-name> [flags]
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
+| `--sandbox-name` | Use a caller-assigned `fs-` sandbox name of at most 19 lowercase letters, digits, or internal hyphens; intended for durable external orchestration |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
+
+An offline `dummy` run skips the sandbox GitHub API connectivity preflight. Other runtimes retain the preflight when a GitHub token is present in the sandbox.
 
 ## Plan block
 

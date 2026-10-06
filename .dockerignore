@@ -20,3 +20,5 @@ docs/
 **/*.pem
 **/*credentials*.json
 **/*serviceaccount*.json
+k8s/.local/
+k8s/.state/

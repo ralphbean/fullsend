@@ -110,20 +110,8 @@ func (k *kubeClient) get(ctx context.Context, name string) (kubeJob, bool, error
 }
 
 func (k *kubeClient) create(ctx context.Context, a attempt) (kubeJob, error) {
-	args := []string{"sh", "-c", "echo fixture-run-complete"}
-	switch a.behavior {
-	case "failure":
-		args = []string{"sh", "-c", "echo fixture-run-failed >&2; exit 23"}
-	case "active":
-		args = []string{"sh", "-c", "sleep 90"}
-	}
-	body := map[string]any{
-		"apiVersion": "batch/v1", "kind": "Job",
-		"metadata": map[string]any{"name": a.name, "namespace": k.namespace, "labels": map[string]string{"app.kubernetes.io/part-of": "fullsend-kind-poc", "fullsend.ai/attempt": fmt.Sprint(a.id)}},
-		"spec":     map[string]any{"backoffLimit": 0, "activeDeadlineSeconds": 180, "template": map[string]any{"metadata": map[string]any{"labels": map[string]string{"app.kubernetes.io/part-of": "fullsend-kind-poc"}}, "spec": map[string]any{"serviceAccountName": "runner", "automountServiceAccountToken": false, "restartPolicy": "Never", "securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 10001, "seccompProfile": map[string]string{"type": "RuntimeDefault"}}, "containers": []any{map[string]any{"name": "stub", "image": k.image, "imagePullPolicy": "IfNotPresent", "command": args, "securityContext": map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []string{"ALL"}}}, "resources": map[string]any{"requests": map[string]string{"cpu": "10m", "memory": "16Mi"}, "limits": map[string]string{"cpu": "100m", "memory": "64Mi"}}}}}}},
-	}
 	var job kubeJob
-	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", body, &job)
+	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", stubJob(a, k.namespace, k.image), &job)
 	return job, err
 }
 

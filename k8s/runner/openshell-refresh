@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+# Gateway client-credentials tokens last five minutes and have no refresh
+# token. Fullsend makes many separate OpenShell CLI calls over a longer run.
+# Serialize the exchange so concurrent provider operations do not race while
+# writing the shared XDG_CONFIG_HOME token cache.
+if [ "${1:-}" = gateway ] && [ "${2:-}" = login ]; then
+  exec /usr/local/bin/openshell-real "$@"
+fi
+if [ -n "${OPENSHELL_OIDC_CLIENT_SECRET:-}" ]; then
+  : "${XDG_CONFIG_HOME:?XDG_CONFIG_HOME is required for gateway token refresh}"
+  if ! flock -x -w 30 "$XDG_CONFIG_HOME/openshell-auth.lock" \
+    /usr/local/bin/openshell-real gateway login >/dev/null 2>&1; then
+    printf '%s\n' 'OpenShell gateway service-account login refresh failed' >&2
+    exit 1
+  fi
+fi
+exec /usr/local/bin/openshell-real "$@"

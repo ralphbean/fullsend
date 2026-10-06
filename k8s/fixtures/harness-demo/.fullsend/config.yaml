@@ -1,0 +1,7 @@
+version: "1"
+roles: [triage]
+runtime: dummy
+forge: github
+agents:
+  - name: gateway-demo
+    source: harness/gateway-demo.yaml

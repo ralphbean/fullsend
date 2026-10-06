@@ -1,0 +1,11 @@
+ops:
+  - description: read the target repository input
+    op: read_file
+    args: sample.txt
+  - description: write a deterministic result
+    op: write_fixture
+    args: output/agent-result.json,embedded
+    content: '{"status":"ok","source":"kind-gateway-demo"}'
+  - description: verify the result exists
+    op: assert_json
+    args: output/agent-result.json,status

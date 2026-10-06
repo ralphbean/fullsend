@@ -78,8 +78,27 @@ func reconcile(ctx context.Context, conn *pgx.Conn, k *kubeClient, a attempt) er
 			return err
 		}
 		if a.state == "cleanup" {
-			_, err = conn.Exec(ctx, `UPDATE attempts SET cleanup_state='done',state='complete' WHERE id=$1`, a.id)
-			return err
+			// The stub has no remote workload. Keep its reservation until
+			// Kubernetes confirms the terminal Job has disappeared.
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback(ctx)
+			var outcome string
+			if err := tx.QueryRow(ctx, `SELECT outcome FROM attempts WHERE id=$1`, a.id).Scan(&outcome); err != nil {
+				return err
+			}
+			if outcome != "succeeded" && outcome != "failed" {
+				return fmt.Errorf("attempt %d has no terminal outcome for cleanup", a.id)
+			}
+			if _, err := tx.Exec(ctx, `UPDATE attempts SET cleanup_state='done',state='complete' WHERE id=$1`, a.id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE selected_runs SET state=$2 WHERE id=$1 AND state='reserved'`, a.runID, outcome); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
 		}
 		_, err = conn.Exec(ctx, `UPDATE attempts SET state='unknown',outcome='job_missing' WHERE id=$1 AND state='active'`, a.id)
 		return err
@@ -97,23 +116,10 @@ func reconcile(ctx context.Context, conn *pgx.Conn, k *kubeClient, a attempt) er
 	}
 	if a.state != "cleanup" {
 		outcome := "succeeded"
-		runState := "succeeded"
 		if job.Status.Failed > 0 {
 			outcome = "failed"
-			runState = "failed"
 		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-		if _, err = tx.Exec(ctx, `UPDATE attempts SET state='cleanup',outcome=$2,job_uid=$3 WHERE id=$1`, a.id, outcome, job.Metadata.UID); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE selected_runs SET state=$2 WHERE id=$1`, a.runID, runState); err != nil {
-			return err
-		}
-		if err = tx.Commit(ctx); err != nil {
+		if _, err = conn.Exec(ctx, `UPDATE attempts SET state='cleanup',outcome=$2,job_uid=$3 WHERE id=$1`, a.id, outcome, job.Metadata.UID); err != nil {
 			return err
 		}
 	}

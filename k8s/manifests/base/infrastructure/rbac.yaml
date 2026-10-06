@@ -11,6 +11,13 @@ metadata:
   namespace: fullsend-runner
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runner-inference
+  namespace: fullsend-runner
+automountServiceAccountToken: false
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

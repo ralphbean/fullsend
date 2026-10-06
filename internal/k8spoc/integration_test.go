@@ -178,6 +178,12 @@ func TestDurableFixtureCycle(t *testing.T) {
 	if err = dispatchWithClient(ctx, conn, k); err != nil {
 		t.Fatal(err)
 	}
+	if err = conn.QueryRow(ctx, `SELECT count(*) FROM selected_runs WHERE state='reserved'`).Scan(&reserved); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 2 {
+		t.Fatalf("terminal Jobs released reservations before cleanup was confirmed: %d", reserved)
+	}
 	fake.finish("fs-poc-2-1", false)
 	if err = dispatchWithClient(ctx, conn, k); err != nil {
 		t.Fatal(err)
@@ -322,6 +328,12 @@ func TestDurableFixtureCycle(t *testing.T) {
 	if cleanupState != "cleanup" {
 		t.Fatalf("outcome was not committed before delete: %s", cleanupState)
 	}
+	if err = conn.QueryRow(ctx, `SELECT r.state FROM selected_runs r JOIN attempts a ON a.run_id=r.id WHERE a.job_name=$1`, cleanupName).Scan(&cleanupState); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupState != "reserved" {
+		t.Fatalf("delete failure released reservation: %s", cleanupState)
+	}
 	if err = dispatchWithClient(ctx, conn, k); err != nil {
 		t.Fatal("delete recovery failed:", err)
 	}
@@ -354,6 +366,11 @@ func TestDurableFixtureCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake.finish(alphaName, true)
+	if err = dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	// The unknown Job holds one slot. The successful Job releases its slot
+	// only after the next cycle confirms Kubernetes deleted it.
 	if err = dispatchWithClient(ctx, conn, k); err != nil {
 		t.Fatal(err)
 	}
@@ -402,6 +419,14 @@ func TestDurableFixtureCycle(t *testing.T) {
 	}
 	if err = k.delete(ctx, lostName, "uid-"+lostName); err != nil {
 		t.Fatal("deleting already-missing Job should converge:", err)
+	}
+	// A missing Job with no terminal outcome cannot release a reservation.
+	var invalidCleanupID int64
+	if err = conn.QueryRow(ctx, `INSERT INTO attempts(run_id,number,job_name,state) VALUES(1,99,'fs-poc-invalid-cleanup','cleanup') RETURNING id`).Scan(&invalidCleanupID); err != nil {
+		t.Fatal(err)
+	}
+	if err = reconcile(ctx, conn, k, attempt{id: invalidCleanupID, runID: 1, name: "fs-poc-invalid-cleanup", state: "cleanup"}); err == nil {
+		t.Fatal("missing Job with no terminal outcome was marked complete")
 	}
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	if err = Dispatch(ctx); err == nil {

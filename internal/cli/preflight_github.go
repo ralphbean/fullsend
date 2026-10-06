@@ -44,6 +44,12 @@ var preflightGitHubSleep = time.Sleep
 // check. Tests replace it with a fake runner.
 var preflightGitHubExec sandboxExecFunc = sandbox.Exec
 
+// Offline dummy runs have no external agent work, so a GitHub API probe is
+// unrelated to their execution and can only block local fixtures.
+func shouldCheckSandboxGitHubConnectivity(runtimeName string, offline bool) bool {
+	return !(runtimeName == "dummy" && offline)
+}
+
 // preflightGitHubResult captures the outcome of a sandbox-side GitHub API
 // connectivity check.
 type preflightGitHubResult struct {

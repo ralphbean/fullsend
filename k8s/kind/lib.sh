@@ -35,3 +35,24 @@ profile_arg() {
   fi
   [[ "$PROFILE" == fixture || "$PROFILE" == live ]] || fail "Supported profiles: fixture, live"
 }
+
+build_gateway_runner() {
+  local revision content_hash tag base_runner_image
+  revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  content_hash="$(cd "$REPO_ROOT" && { git diff HEAD --binary; git ls-files --others --exclude-standard | sort | xargs -r sha256sum; } | sha256sum | cut -c1-16)"
+  tag="${revision:0:12}-${content_hash}"
+  GATEWAY_RUNNER_IMAGE="localhost/fullsend-poc-runner:$tag"
+  base_runner_image="localhost/fullsend-poc-runner-base:$tag"
+  status '🔧' "Building UBI10 runner image from checkout ($tag)"
+  (cd "$REPO_ROOT" && podman build \
+    --build-arg "FULLSEND_COMMIT=$revision" \
+    -f images/runner/Containerfile -t "$base_runner_image" .)
+  podman build --build-arg "BASE_RUNNER_IMAGE=$base_runner_image" \
+    -f "$K8S_ROOT/runner/Containerfile" -t "$GATEWAY_RUNNER_IMAGE" "$K8S_ROOT/runner"
+  [[ "$(podman run --rm --entrypoint openshell "$GATEWAY_RUNNER_IMAGE" --version)" == 'openshell 0.1.2-rhaiv.0' ]] \
+    || fail 'Runner OpenShell version does not match the provisioned gateway'
+  [[ "$(podman run --rm --user 10001:10001 --entrypoint id "$GATEWAY_RUNNER_IMAGE" -un)" == runner ]] \
+    || fail 'Runner UID 10001 must resolve to a user for OpenShell SSH transfers'
+  kind load docker-image "$GATEWAY_RUNNER_IMAGE" --name "$KIND_NAME"
+  printf '%s\n' "$GATEWAY_RUNNER_IMAGE" > "$STATE_DIR/gateway-runner-image"
+}

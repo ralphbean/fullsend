@@ -460,6 +460,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi and codex — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
+	cmd.Flags().StringVar(&oFlags.sandboxName, "sandbox-name", "", "use a caller-assigned fs- sandbox name (at most 19 characters; for durable external orchestration)")
+	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -1397,9 +1399,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	result.Profiles = dedupResolvedProfiles(result.Profiles)
 	// The sandbox name is generated before providers are created so a
 	// run-scoped provider can carry its suffix (#6689).
-	sandboxName := generateSandboxName(agentName)
-	if len(sandboxName) > maxSandboxNameLen {
-		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
+	sandboxName, err := selectedSandboxName(agentName, oFlags.sandboxName)
+	if err != nil {
+		return err
 	}
 	// Inference gateway route (ADR 0137, #8280): selected per model by the
 	// gateway/ prefix, with no precedence against the OpenAI routes, and
@@ -2383,7 +2385,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Validates that the sandbox can reach api.github.com through the proxy
 	// before starting the agent. Without this, agents that depend on gh CLI
 	// burn their entire timeout on doomed API calls. See #2143.
-	{
+	if shouldCheckSandboxGitHubConnectivity(runtimeBackend.Runtime.Name(), rFlags.offline) {
 		preflightStart := time.Now()
 		printer.StepStart("Checking GitHub API connectivity from sandbox")
 		result, connectErr := checkSandboxGitHubConnectivity(sandboxName, printer)
@@ -2396,6 +2398,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else {
 			printer.StepDone(fmt.Sprintf("GitHub API reachable from sandbox (%.1fs)", time.Since(preflightStart).Seconds()))
 		}
+	} else {
+		printer.StepInfo("GitHub API check skipped for offline dummy runtime")
 	}
 
 	// 9c. Run agent with validation loop.
@@ -5916,6 +5920,18 @@ func injectTraceID(sandboxName, traceID string) error {
 // inputs, ensuring uniqueness even when PID and wall-clock are identical
 // (e.g., on coarse-clock VMs or within tight loops in tests).
 var sandboxNameSeq atomic.Uint64
+
+var assignedSandboxNamePattern = regexp.MustCompile(`^fs-[a-z0-9][a-z0-9-]*$`)
+
+func selectedSandboxName(agentName, assigned string) (string, error) {
+	if assigned == "" {
+		return generateSandboxName(agentName), nil
+	}
+	if len(assigned) > maxSandboxNameLen || !assignedSandboxNamePattern.MatchString(assigned) || strings.HasSuffix(assigned, "-") {
+		return "", fmt.Errorf("sandbox name must start with fs-, contain only lowercase letters, digits or internal hyphens, and fit within %d characters", maxSandboxNameLen)
+	}
+	return assigned, nil
+}
 
 // generateSandboxName produces a unique sandbox name that fits within the
 // OpenShell maximum of maxSandboxNameLen (19) characters. It embeds a

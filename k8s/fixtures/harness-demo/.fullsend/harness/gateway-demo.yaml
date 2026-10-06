@@ -1,0 +1,7 @@
+agent: agents/gateway-demo.md
+description: Verify a pinned Fullsend run through the kind gateway
+role: triage
+slug: gateway-demo
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:d27c0a503c0c971cf6d9fe80dc983e26673aa49ee9b6ef35d78fb9117714b371
+policy: policies/no-network.yaml
+timeout_minutes: 5

@@ -205,6 +205,8 @@ func TestProfileListed(t *testing.T) {
 	assert.True(t, profileListed(jsonOut, "fullsend-openai"))
 	assert.False(t, profileListed(jsonOut, "fullsend-github"), "a display name or other field never matches")
 	assert.False(t, profileListed([]byte("[]"), "fullsend-openai"))
+	withTLSWarning := []byte("2026-10-06T14:43:48Z WARN openshell_cli::tls: TLS certificate verification is disabled\n" + string(jsonOut))
+	assert.True(t, profileListed(withTLSWarning, "fullsend-openai"))
 
 	textOut := []byte("Provider profiles\n\n  Cloud\n    aws              AWS              endpoints: 3\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n")
 	assert.True(t, profileListed(textOut, "fullsend-openai"), "human table: first column is the id")

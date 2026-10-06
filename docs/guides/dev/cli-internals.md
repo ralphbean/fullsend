@@ -127,6 +127,7 @@ fullsend
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
+│   ├── --sandbox-name <name>                #   Caller-assigned sandbox identity for durable orchestration
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution

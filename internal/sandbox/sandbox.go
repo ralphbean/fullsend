@@ -478,7 +478,13 @@ func profileListed(out []byte, id string) bool {
 	var profiles []struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(out), &profiles); err == nil {
+	jsonOut := bytes.TrimSpace(out)
+	// OpenShell emits its insecure-gateway warning before JSON on stdout.
+	// Keep the warning visible in logs, but parse the array after it.
+	if i := bytes.Index(jsonOut, []byte("\n[")); i >= 0 {
+		jsonOut = bytes.TrimSpace(jsonOut[i+1:])
+	}
+	if err := json.Unmarshal(jsonOut, &profiles); err == nil {
 		for _, p := range profiles {
 			if p.ID == id {
 				return true
@@ -1918,20 +1924,9 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		return nil, fmt.Errorf("listing output files: %w", err)
 	}
 
-	trimmed := strings.TrimSpace(stdout)
-	if trimmed == "" {
-		return nil, nil
-	}
-	lines := strings.Split(trimmed, "\n")
-
 	var extracted []string
-	for _, remotePath := range lines {
-		remotePath = strings.TrimSpace(remotePath)
-		if remotePath == "" {
-			continue
-		}
-		relPath := strings.TrimPrefix(remotePath, remoteDir)
-		relPath = strings.TrimPrefix(relPath, "/")
+	for _, file := range sandboxOutputFiles(remoteDir, stdout) {
+		remotePath, relPath := file.remote, file.relative
 
 		if dir := filepath.Dir(relPath); dir != "." {
 			if mkErr := root.MkdirAll(dir, 0o755); mkErr != nil {
@@ -1960,4 +1955,33 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 	}
 
 	return extracted, nil
+}
+
+type sandboxOutputFile struct {
+	remote, relative string
+}
+
+func sandboxOutputFiles(remoteDir, listing string) []sandboxOutputFile {
+	var files []sandboxOutputFile
+	for _, line := range strings.Split(listing, "\n") {
+		remotePath := strings.TrimSpace(line)
+		if remotePath == "" {
+			continue
+		}
+		rel, ok := relativeSandboxOutputPath(remoteDir, remotePath)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "  Skipping unexpected output listing line: %s\n", remotePath)
+			continue
+		}
+		files = append(files, sandboxOutputFile{remote: remotePath, relative: rel})
+	}
+	return files
+}
+
+func relativeSandboxOutputPath(remoteDir, remotePath string) (string, bool) {
+	rel, err := filepath.Rel(remoteDir, remotePath)
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }

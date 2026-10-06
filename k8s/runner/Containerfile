@@ -1,0 +1,17 @@
+# The standard runner is built from this checkout on UBI10. This local PoC
+# layer replaces only its upstream OpenShell client with the gateway-matched
+# HyperShell build. The digest is the multi-architecture manifest list.
+ARG BASE_RUNNER_IMAGE
+FROM quay.io/opendatahub/odh-openshell-cli@sha256:94776a16424bc0e143836c3c3442d8aee777e8c6e096b33b2c69106da4eb5b93 AS hypershell_cli
+
+FROM ${BASE_RUNNER_IMAGE}
+# OpenSSH, used by OpenShell for file transfer, resolves the local UID via
+# /etc/passwd. The Kubernetes runner Pod uses UID/GID 10001.
+RUN groupadd --gid 10001 runner \
+    && useradd --uid 10001 --gid 10001 --home-dir /home/runner \
+      --no-create-home --shell /sbin/nologin runner
+COPY --from=hypershell_cli /usr/local/bin/openshell /usr/local/bin/openshell-real
+COPY openshell-refresh /usr/local/bin/openshell
+RUN chmod 0755 /usr/local/bin/openshell
+COPY probe-policy.yaml /etc/fullsend/probe-policy.yaml
+RUN test "$(openshell --version)" = 'openshell 0.1.2-rhaiv.0'

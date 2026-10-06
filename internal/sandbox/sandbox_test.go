@@ -2815,3 +2815,29 @@ func TestResolvedBasename(t *testing.T) {
 		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
 	})
 }
+
+func TestRelativeSandboxOutputPath(t *testing.T) {
+	const outputDir = "/sandbox/workspace/output"
+	rel, ok := relativeSandboxOutputPath(outputDir, outputDir+"/agent-result.json")
+	require.True(t, ok)
+	assert.Equal(t, "agent-result.json", rel)
+	for _, path := range []string{
+		"2026-10-06T12:45:58Z WARN openshell_cli::tls: TLS certificate verification is disabled",
+		"/sandbox/workspace/other.json",
+		"/sandbox/workspace/output/../outside.json",
+		outputDir,
+	} {
+		_, ok := relativeSandboxOutputPath(outputDir, path)
+		assert.False(t, ok, path)
+	}
+}
+
+func TestSandboxOutputFilesIgnoresOpenShellWarning(t *testing.T) {
+	const dir = "/sandbox/workspace/output"
+	listing := "2026-10-06T12:45:58Z WARN openshell_cli::tls: TLS certificate verification is disabled\n" +
+		dir + "/agent-result.json\n" + dir + "/nested/trace.json\n"
+	assert.Equal(t, []sandboxOutputFile{
+		{remote: dir + "/agent-result.json", relative: "agent-result.json"},
+		{remote: dir + "/nested/trace.json", relative: "nested/trace.json"},
+	}, sandboxOutputFiles(dir, listing))
+}

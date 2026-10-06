@@ -8317,6 +8317,21 @@ func TestGenerateSandboxName_Length(t *testing.T) {
 		name, len(name), maxSandboxNameLen)
 }
 
+func TestSelectedSandboxName(t *testing.T) {
+	generated, err := selectedSandboxName("triage", "")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(generated, "fs-tri-"))
+	assigned := "fs-poc-123456789abc"
+	got, err := selectedSandboxName("triage", assigned)
+	require.NoError(t, err)
+	assert.Equal(t, assigned, got)
+	for _, invalid := range []string{"other-123", "fs-upperCASE", "fs-bad/name", "fs-name-", "fs-12345678901234567"} {
+		if _, err := selectedSandboxName("triage", invalid); err == nil {
+			t.Fatalf("accepted invalid assigned sandbox name %q", invalid)
+		}
+	}
+}
+
 func TestGenerateSandboxName_Prefix(t *testing.T) {
 	name := generateSandboxName("triage")
 	assert.True(t, strings.HasPrefix(name, "fs-tri-"),

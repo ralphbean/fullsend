@@ -387,3 +387,9 @@ func TestPreflightGitHubRetryReason(t *testing.T) {
 	assert.Equal(t, "connection reset", preflightGitHubRetryReason(1, nil, "Connection reset by peer"))
 	assert.Equal(t, "transient network error", preflightGitHubRetryReason(1, nil, "other"))
 }
+
+func TestShouldCheckSandboxGitHubConnectivity(t *testing.T) {
+	assert.False(t, shouldCheckSandboxGitHubConnectivity("dummy", true))
+	assert.True(t, shouldCheckSandboxGitHubConnectivity("dummy", false))
+	assert.True(t, shouldCheckSandboxGitHubConnectivity("pi", true))
+}
