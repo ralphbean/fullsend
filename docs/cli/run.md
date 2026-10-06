@@ -34,6 +34,8 @@ fullsend run <agent-name> [flags]
 
 An offline `dummy` run skips the sandbox GitHub API connectivity preflight. Other runtimes retain the preflight when a GitHub token is present in the sandbox.
 
+If sandbox creation fails, `fullsend run` requests deletion before reusing that sandbox name for another creation attempt. A failed deletion stops the retries and reports both errors with `cleanup unverified`; reconcile the named remote sandbox before starting another run.
+
 ## Plan block
 
 At startup, `fullsend run` prints a plan block summarizing the resolved configuration:

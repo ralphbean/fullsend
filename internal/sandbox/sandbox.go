@@ -1113,8 +1113,9 @@ func Create(name string, providers []string, image, policy string) error {
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
 // exponential backoff on failure. Between attempts the failed sandbox is
-// deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
-// overrides the default ready timeout.
+// deleted to avoid name conflicts. A failed delete stops retries so another
+// create cannot reuse a name whose remote cleanup is unverified. If
+// readyTimeoutOverride is positive, it overrides the default ready timeout.
 func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
@@ -1135,13 +1136,14 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		// detected the mismatch) and return immediately.
 		if errors.Is(lastErr, errPolicyGlobal) {
 			if delErr := Delete(name); delErr != nil {
-				fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+				return errors.Join(lastErr, fmt.Errorf("sandbox %q cleanup unverified: %w", name, delErr))
 			}
 			return lastErr
 		}
 
 		if delErr := Delete(name); delErr != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+			return fmt.Errorf("sandbox %q cleanup unverified after creation attempt %d/%d; refusing further attempts: %w",
+				name, attempt, maxAttempts, errors.Join(lastErr, delErr))
 		}
 
 		if attempt < maxAttempts {

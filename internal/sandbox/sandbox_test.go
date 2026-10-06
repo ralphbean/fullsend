@@ -552,7 +552,8 @@ func TestCreateWithRetry_OpenshellNotInPath(t *testing.T) {
 
 	err := CreateWithRetry("test-sandbox", nil, "", "", 1, 0)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "sandbox creation failed after 1 attempts")
+	assert.Contains(t, err.Error(), "cleanup unverified")
+	assert.Contains(t, err.Error(), "executable file not found")
 }
 
 func TestCreateWithRetry_ZeroAttempts(t *testing.T) {
@@ -568,7 +569,19 @@ func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
 }
 
 func TestCreateWithRetry_SleepsBetweenAttempts(t *testing.T) {
-	t.Setenv("PATH", "")
+	dir := t.TempDir()
+	callsFile := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$2" >> %s
+case "$2" in
+  create) echo "transient create failure"; exit 1 ;;
+  get) exit 1 ;;
+  delete) exit 0 ;;
+esac
+exit 1
+`, callsFile)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
 
 	var sleeps []time.Duration
 	orig := RetrySleepFn
@@ -579,6 +592,39 @@ func TestCreateWithRetry_SleepsBetweenAttempts(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox creation failed after 3 attempts")
 	assert.Equal(t, []time.Duration{retryInitialBackoff, retryInitialBackoff * 2}, sleeps)
+	calls, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, 3, strings.Count(string(calls), "create"))
+}
+
+func TestCreateWithRetry_StopsWhenCleanupFails(t *testing.T) {
+	dir := t.TempDir()
+	callsFile := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$2" >> %s
+case "$2" in
+  create) echo "create timed out"; exit 1 ;;
+  get) exit 1 ;;
+  delete) echo "tls handshake eof"; exit 1 ;;
+esac
+exit 1
+`, callsFile)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	orig := RetrySleepFn
+	RetrySleepFn = func(time.Duration) { t.Error("must not retry after failed cleanup") }
+	t.Cleanup(func() { RetrySleepFn = orig })
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cleanup unverified after creation attempt 1/3")
+	assert.Contains(t, err.Error(), "create timed out")
+	assert.Contains(t, err.Error(), "tls handshake eof")
+	calls, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(calls), "create"))
+	assert.Equal(t, 1, strings.Count(string(calls), "delete"))
 }
 
 func TestCreateOnce_DetachedPersistentCommand(t *testing.T) {
@@ -1063,6 +1109,30 @@ exit 0
 	require.NoError(t, readErr)
 	gets := strings.Count(string(data), "get")
 	assert.Equal(t, 1, gets, "global policy error must not trigger retries")
+}
+
+func TestCreateWithRetry_PolicyGlobalReportsCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$2" in
+  create) exit 0 ;;
+  get)
+    echo "Phase: Ready"
+    echo "Policy source: global"
+    echo "Policy:"
+    exit 0 ;;
+  delete) echo "gateway unavailable"; exit 1 ;;
+esac
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := CreateWithRetry("test-sandbox", nil, "", "/path/to/policy.yaml", 3, 5*time.Second)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errPolicyGlobal)
+	assert.Contains(t, err.Error(), "cleanup unverified")
+	assert.Contains(t, err.Error(), "gateway unavailable")
 }
 
 func TestVerifyPolicy_OutputIncludedInErrors(t *testing.T) {
