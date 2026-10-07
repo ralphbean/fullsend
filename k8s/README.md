@@ -6,7 +6,7 @@ This directory implements the core paths for milestones 1–3: a local kind clus
 
 ## Prerequisites
 
-Install `kind`, `kubectl`, Podman, Go, Git, OpenSSL, `jq`, and `sha256sum`. The scripts pin images in [kind/versions.env](kind/versions.env) and use Podman as the kind provider. They do not change your default kubeconfig or current context. Rootless kind may require host networking settings specific to the machine.
+Install `kind`, `kubectl`, Podman, Go, Git, OpenSSL, `jq`, ripgrep, and `sha256sum`. The scripts pin images in [kind/versions.env](kind/versions.env) and use Podman as the kind provider. They do not change your default kubeconfig or current context. Rootless kind may require host networking settings specific to the machine.
 
 From any directory:
 
@@ -62,13 +62,16 @@ The poller reads comments and changelog pages for each matching issue and record
 
 The script requires the gateway to reach `Running` with a route before setting up its service account. If HyperShell reports `Degraded` or `Failed`, inspect both its `status` and provisioning conditions in the console. Conditions may all read `Complete` while the deployment status reports unavailable replicas. Restore the gateway before retrying setup or cleanup.
 
-Supply the management API URL and OIDC issuer from your HyperShell administrator. The managed console's `/api/*` route requires a browser session and does not forward a CLI bearer token, so its URL is not an `hsctl --url` substitute; use the direct management API origin. For a new gateway, place a JSON request under `k8s/.local/gateway/` with its `name`, `cluster_id`, and `release_id`, as selected in the management console. An empty `release_id` is valid for a gateway using the managed default release; include `"route":"{\"enabled\":true}"` when following the console's gateway creation request. Omit `--gateway-request` to reuse an existing gateway. With console access only, the first run uses an interactive device login; `hsctl` then caches a refresh token in the ignored local config. For unattended first use, supply a private management bearer token file via `--token-file`. A gateway service account cannot authenticate to the management API. `openshell-user` also needs membership in the intended gateway workspace; choose `--role openshell-admin` only if that broader access is intended. For a console-created service account whose one-time credential was saved as a raw mode-600 secret, pass `--existing-client-secret-file` and, if its OpenShell registration has a separate local name, `--openshell-name`.
+Supply the management API URL and OIDC issuer from your HyperShell administrator. The managed console's `/api/*` route requires a browser session and does not forward a CLI bearer token, so its URL is not an `hsctl --url` substitute; use the direct management API origin. For a new gateway, place a JSON request under `k8s/.local/gateway/` with its `name` and a nonempty `cluster_id` from `hsctl list managedClusters --output json`. The current managed API requires a registered ManagedCluster and rejects empty `cluster_id`; the pinned CLI's hub-default comment does not apply to this deployment. Pass `--cluster-name` to verify that the ID still maps to the expected ManagedCluster before creation. The current managed API also rejects `release_id` in gateway creation requests, despite that field appearing in the pinned `hsctl` CLI. Include `"route":"{\"enabled\":true}"` when following the console's gateway creation request. Omit `--gateway-request` to reuse an existing gateway.
+
+With console access only, the first run uses an interactive device login; `hsctl` then caches a refresh token in the ignored local config. For unattended first use, supply a private management bearer token file via `--token-file`. A gateway service account cannot authenticate to the management API. `openshell-user` also needs membership in the intended gateway workspace; choose `--role openshell-admin` only if that broader access is intended. For a console-created service account whose one-time credential was saved as a raw mode-600 secret, pass `--existing-client-secret-file` and, if its OpenShell registration has a separate local name, `--openshell-name`.
 
 ```sh
 k8s/kind/07-hypershell-setup.sh \
   --api-url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL" \
   --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
   --gateway-request k8s/.local/gateway/request.json \
+  --cluster-name "$HYPERSHELL_CLUSTER_NAME" \
   --service-account-name fullsend-poc
 ```
 
@@ -94,6 +97,17 @@ After the probe has installed the gateway Secrets, run `k8s/kind/09-harness-demo
 
 To send the same fixture through the dispatcher, deploy the fixture profile with this checkout's control-plane image and run `k8s/kind/11-dispatch-gateway-demo.sh --profile fixture`. The script builds the UBI10 runner, injects one UUID-keyed `gateway_demo` observation, and adds the exact `gateway-demo` selection only to the ignored local fixture revision. The dispatcher persists the attempt before creating a Job; its sandbox name is derived from that Job name. After the runner exits, the dispatcher launches `fs-clean-<run>-<attempt>` to verify the remote sandbox is absent, then deletes the runner Job. Only confirmed Job removal after that cleanup releases capacity and entity-conflict reservations. Output and cleanup evidence remain on the PVC. `fullsend k8s-poc cancel RUN_ID` requests an active gateway-demo stop and follows the same remote cleanup gate; it finishes as a cleaned-up failure. This fixture path uses the shared PoC gateway service account and does not pass Jira or forge credentials to the runner.
 
+To exercise workspace and per-run provider scoping on the dedicated test gateway, run `k8s/kind/12-workspace-isolation.sh` with the gateway name, its local service-account secret path, and a digest-pinned sandbox image:
+
+```sh
+k8s/kind/12-workspace-isolation.sh \
+  --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
+  --client-secret-file "k8s/.local/gateway/${HYPERSHELL_GATEWAY_NAME}-fullsend-poc-client-secret" \
+  --sandbox-image 'YOUR_SANDBOX_IMAGE@sha256:YOUR_DIGEST'
+```
+
+The script creates two temporary workspaces, separate run-scoped OpenAI providers with distinct random test credentials, and one pinned sandbox per workspace. It verifies that the provider and sandbox resources are visible only in their own workspace, then removes the temporary resources. The credentials are synthetic and never used for inference; only their SHA-256 fingerprints are recorded under ignored `k8s/.state/`. The runner workspaces still share the gateway service-account credential, so this demonstrates workspace resource separation rather than tenant-safe gateway authentication. If the script is interrupted, inspect the two reported workspace names and remove any remaining PoC resources before resetting kind.
+
 Observed on 2026-10-06: managed HyperShell sandbox provisioning was intermittent. A provider-free kind demo with the pinned Fullsend image and explicit policy remained `ConfigurationPending` until a 300-second timeout; subsequent host runs on both a fresh gateway and `poc2` succeeded. A later kind demo Job (`fs-demo-62513bb9`) also succeeded: sandbox creation took 96.8 seconds, the dummy agent exited 0, output was downloaded and hashed, and sandbox deletion was verified. The precise cause of the earlier stall is unknown. Its immediate same-name retries encountered a stale workload Pod UID error, so a retry must account for remote deletion and Kubernetes reconciliation before reusing a sandbox name.
 
 The independent WIF probe then succeeded from a UBI runner Pod: a projected `runner-inference` token was exchanged through Google STS, the scoped inference account was impersonated, and Vertex returned a Claude Haiku 4.5 response. A separate provider-bound `fullsend run` Job (`fs-demo-d4235f04`) imported the Vertex profile and reached sandbox creation, but provisioning timed out after 300 seconds while `poc2` was Degraded and its route returned TLS handshake EOF. After the service recovered, that retained sandbox was explicitly deleted and its absence verified. A later manual Job on `poc4` (`fs-demo-a7c1ea6f`) completed real inference inside the remote sandbox, validated its downloaded output, and deleted its sandbox. See [STATUS.md](STATUS.md) for the evidence and remaining acceptance gaps.
@@ -111,6 +125,8 @@ The script checks that the existing provider's issuer matches this cluster, reje
 A killed Pod can leave remote sandboxes named in `intent.json`. `08-gateway-cleanup.sh` stops probe, demo, and dispatcher gateway Jobs, reconciles their sandbox names through the gateway, and writes `cleanup.json` on the PVC. `destroy.sh` and `reset.sh` invoke it before deleting the cluster and stop if cleanup fails. Keep the gateway reachable until teardown finishes. The dispatcher also starts a per-attempt cleanup Job during normal reconciliation. That Job retries three transient failures; a terminal failure retains the reservation. After the gateway recovers, delete only the failed `fs-clean-<run>-<attempt>` Job and let the dispatcher recreate it. Keep the cluster and evidence PVC until remote absence is verified.
 
 If an old gateway cannot be used for cleanup, preserve its probe evidence and explicitly retire each old Job with `08-retire-gateway-evidence.sh --old-gateway-label LABEL --job JOB --acknowledge-unverified-cleanup`. The script exports intent, result, and logs under ignored `k8s/.state/retired-gateways/LABEL/`, records the sandbox names and unverified status, and moves those directories under `retired/LABEL/` on the evidence PVC. The active cleanup scan then applies only to probes made through the replacement gateway. Retirement does not delete or prove deletion of remote sandboxes. Keep the archive after resetting kind so cleanup can be revisited if the old gateway recovers.
+
+For a dispatcher attempt that failed before the runner wrote any evidence, whose runner Job is gone, and whose old gateway was deleted, use `08-retire-preflight-attempt.sh --attempt-id ID --old-gateway-label LABEL --acknowledge-deleted-gateway`. It requires the cleanup Job to be terminally failed, the runner Job and evidence directory to be absent, and the attempt still to hold a failed run's reservation. It archives the failed cleanup Job and logs, then atomically marks the run failed and the attempt `cleanup_state=retired`. This releases the reservation while preserving **unverified** remote cleanup status; it does not mark cleanup `done` or claim a lookup on the replacement gateway proves anything about the old one. The regular kind teardown skips these retired attempts.
 
 ## Troubleshooting
 

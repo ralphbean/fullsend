@@ -7,7 +7,7 @@ require_owned
 cleanup_dispatcher_attempts() {
   local rows attempt_id attempt_name cleanup_name
   rows="$(k -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -AtF '|' -c \
-    "SELECT a.id,a.job_name FROM attempts a JOIN selected_runs r ON r.id=a.run_id WHERE r.harness='gateway-demo' ORDER BY a.id")"
+    "SELECT a.id,a.job_name FROM attempts a JOIN selected_runs r ON r.id=a.run_id WHERE r.harness='gateway-demo' AND a.cleanup_state!='retired' ORDER BY a.id")"
   [[ -n "$rows" ]] || return 0
   status '🔧' 'Stopping dispatcher runners and verifying every owned remote sandbox is absent'
   while IFS='|' read -r attempt_id attempt_name; do
