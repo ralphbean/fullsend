@@ -1,6 +1,6 @@
 # Local dispatcher and poller PoC on kind
 
-Planning handoff, 2026-10-02. Implementation has not started. Baseline checkout: `90833a878`.
+Planning handoff written 2026-10-02 from baseline checkout `90833a878`. For current implementation and verification results, see [STATUS.md](STATUS.md).
 
 Build this incrementally in `fullsend-ai/fullsend`. The first useful stopping point is milestone 2: a reproducible, credential-free poll → PostgreSQL → dispatch → Kubernetes Job → recorded result demonstration. Milestone 4 adds representative Fullsend work through a user-provisioned HyperShell gateway. Milestones 5 and 6 independently replace repository and inference credentials with workload identity.
 

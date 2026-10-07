@@ -1,6 +1,7 @@
 package k8spoc
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -9,6 +10,17 @@ import (
 var jobNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 var imageDigestPattern = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 var localRunnerTagPattern = regexp.MustCompile(`^localhost/fullsend-poc-runner:[0-9a-f]{12}-[0-9a-f]{16}$`)
+var attemptJobPattern = regexp.MustCompile(`^fs-poc-[1-9][0-9]*-[1-9][0-9]*$`)
+
+// attemptSandboxName is derived only from the durable attempt Job identity.
+// The same derivation is used by the runner and by its independent cleaner.
+func attemptSandboxName(jobName string) (string, error) {
+	if !attemptJobPattern.MatchString(jobName) || len(jobName) > 63 {
+		return "", fmt.Errorf("invalid dispatcher attempt Job name")
+	}
+	hash := sha256.Sum256([]byte(jobName))
+	return fmt.Sprintf("fs-%x", hash[:8]), nil
+}
 
 func validProbeName(name string) bool {
 	return len(name) >= 4 && len(name) <= 17 && len(name) >= 3 && name[:3] == "fs-" && jobNamePattern.MatchString(name)
@@ -79,9 +91,23 @@ func GatewayDemoJob(name, runnerImage string) ([]byte, error) {
 	if !ok || len(names) != 1 {
 		return nil, fmt.Errorf("demo Job name must use fs-demo-<eight lowercase hex digits>")
 	}
+	return gatewayDemoJob(name, names[0], runnerImage, 0)
+}
+
+// GatewayAttemptJob dispatches the fixture's gateway-demo harness with the
+// exact identity reserved in PostgreSQL. No source field becomes a command.
+func GatewayAttemptJob(name, runnerImage string, attemptID int64) ([]byte, error) {
+	sandboxName, err := attemptSandboxName(name)
+	if err != nil || attemptID < 1 {
+		return nil, fmt.Errorf("valid durable attempt identity is required")
+	}
+	return gatewayDemoJob(name, sandboxName, runnerImage, attemptID)
+}
+
+func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64) ([]byte, error) {
 	jobBytes, err := gatewayRunnerJob(name, runnerImage, "demo", []string{
 		"/usr/local/bin/fullsend", "k8s-poc", "gateway-demo",
-		"--job-name", name, "--sandbox-name", names[0],
+		"--job-name", name, "--sandbox-name", sandboxName,
 		"--demo-dir", "/demo", "--evidence-dir", "/evidence/" + name,
 	})
 	if err != nil {
@@ -90,6 +116,9 @@ func GatewayDemoJob(name, runnerImage string) ([]byte, error) {
 	var job map[string]any
 	if err := json.Unmarshal(jobBytes, &job); err != nil {
 		return nil, err
+	}
+	if attemptID > 0 {
+		job["metadata"].(map[string]any)["labels"].(map[string]any)["fullsend.ai/attempt"] = fmt.Sprint(attemptID)
 	}
 	pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	volumes := pod["volumes"].([]any)
@@ -108,6 +137,31 @@ func GatewayDemoJob(name, runnerImage string) ([]byte, error) {
 	pod["initContainers"] = append(initContainers, init)
 	container := pod["containers"].([]any)[0].(map[string]any)
 	container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"name": "demo", "mountPath": "/demo"})
+	return json.MarshalIndent(job, "", "  ")
+}
+
+// GatewayAttemptCleanupJob verifies remote absence independently of the run
+// Pod. Its successful terminal status is the dispatcher's stop evidence.
+func GatewayAttemptCleanupJob(attemptName, runnerImage string, attemptID int64) ([]byte, error) {
+	if _, err := attemptSandboxName(attemptName); err != nil || attemptID < 1 {
+		return nil, fmt.Errorf("valid durable attempt identity is required")
+	}
+	name := "fs-clean-" + attemptName[len("fs-poc-"):]
+	data, err := gatewayRunnerJob(name, runnerImage, "attempt-cleanup", []string{
+		"/usr/local/bin/fullsend", "k8s-poc", "cleanup-gateway-attempt", "--job-name", attemptName,
+		"--evidence-dir", "/evidence/" + attemptName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var job map[string]any
+	if err := json.Unmarshal(data, &job); err != nil {
+		return nil, err
+	}
+	job["metadata"].(map[string]any)["labels"].(map[string]any)["fullsend.ai/attempt"] = fmt.Sprint(attemptID)
+	// Remote delete and absence checks are idempotent. Let the Kubernetes
+	// controller retry brief gateway outages without releasing the reservation.
+	job["spec"].(map[string]any)["backoffLimit"] = 3
 	return json.MarshalIndent(job, "", "  ")
 }
 

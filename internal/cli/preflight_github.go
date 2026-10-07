@@ -93,7 +93,12 @@ func checkSandboxGitHubConnectivity(sandboxName string, printer *ui.Printer) (*p
 	if err != nil {
 		return &preflightGitHubResult{Skipped: true, SkipReason: "probe command failed: " + err.Error()}, nil
 	}
+	// OpenShell may print a TLS warning before the command's marker on stdout.
+	// The marker is the last non-empty line emitted by the probe command.
 	probe := strings.TrimSpace(stdout)
+	if i := strings.LastIndexByte(probe, '\n'); i >= 0 {
+		probe = strings.TrimSpace(probe[i+1:])
+	}
 	if exitCode != 0 || probe == "NOTOKEN" {
 		return &preflightGitHubResult{Skipped: true, SkipReason: "GH_TOKEN not set in sandbox"}, nil
 	}

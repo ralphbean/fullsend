@@ -104,6 +104,55 @@ func TestGatewayCleanupJobUsesRunnerTemplate(t *testing.T) {
 	}
 }
 
+func TestGatewayAttemptJobsBindDurableIdentity(t *testing.T) {
+	image := "localhost/fullsend-poc-runner:abcdef123456-0123456789abcdef"
+	name := "fs-poc-23-2"
+	sandboxName, err := attemptSandboxName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sandboxName == "" || sandboxName == "fs-poc-23-2" {
+		t.Fatalf("unexpected sandbox name %q", sandboxName)
+	}
+	data, err := GatewayAttemptJob(name, image, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job map[string]any
+	if err := json.Unmarshal(data, &job); err != nil {
+		t.Fatal(err)
+	}
+	labels := job["metadata"].(map[string]any)["labels"].(map[string]any)
+	if labels["fullsend.ai/attempt"] != "17" || labels["fullsend.ai/gateway-job"] != "demo" {
+		t.Fatalf("incorrect attempt labels: %v", labels)
+	}
+	if !strings.Contains(string(data), sandboxName) || !strings.Contains(string(data), "/evidence/"+name) {
+		t.Fatalf("runner did not receive durable identity and evidence path: %s", data)
+	}
+	cleanup, err := GatewayAttemptCleanupJob(name, image, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cleanup), "fs-clean-23-2") || !strings.Contains(string(cleanup), "cleanup-gateway-attempt") {
+		t.Fatalf("cleanup Job did not target attempt: %s", cleanup)
+	}
+	var cleanupJob map[string]any
+	if err := json.Unmarshal(cleanup, &cleanupJob); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupJob["spec"].(map[string]any)["backoffLimit"] != float64(3) {
+		t.Fatal("cleanup Job must retry transient gateway failures")
+	}
+	for _, invalid := range []string{"fs-poc-0-1", "fs-poc-1-0", "fs-demo-deadbeef", "fs-poc-1-1/foreign"} {
+		if _, err := GatewayAttemptJob(invalid, image, 17); err == nil {
+			t.Fatalf("accepted invalid attempt name %q", invalid)
+		}
+	}
+	if _, err := GatewayAttemptCleanupJob(name, image, 0); err == nil {
+		t.Fatal("accepted zero attempt ID")
+	}
+}
+
 func assertGatewayInsecureWarning(t *testing.T, container map[string]any) {
 	t.Helper()
 	found := false

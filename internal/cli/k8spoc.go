@@ -105,6 +105,32 @@ func newK8sPoCCmd() *cobra.Command {
 	cleanup.Flags().StringVar(&cleanupEvidence, "evidence-dir", "", "Persistent probe evidence directory")
 	_ = cleanup.MarkFlagRequired("evidence-dir")
 	root.AddCommand(cleanup)
+	var attemptCleanupName, attemptCleanupEvidence string
+	attemptCleanup := &cobra.Command{Use: "cleanup-gateway-attempt", Short: "Verify an interrupted dispatcher attempt has no remote sandbox", RunE: func(cmd *cobra.Command, _ []string) error {
+		return k8spoc.GatewayAttemptCleanup(cmd.Context(), attemptCleanupName, attemptCleanupEvidence)
+	}}
+	attemptCleanup.Flags().StringVar(&attemptCleanupName, "job-name", "", "Durable fs-poc-<run>-<attempt> Job name")
+	attemptCleanup.Flags().StringVar(&attemptCleanupEvidence, "evidence-dir", "", "Persistent attempt evidence directory")
+	_ = attemptCleanup.MarkFlagRequired("job-name")
+	_ = attemptCleanup.MarkFlagRequired("evidence-dir")
+	root.AddCommand(attemptCleanup)
+	var renderAttemptName, renderAttemptImage string
+	var renderAttemptID int64
+	renderAttemptCleanup := &cobra.Command{Use: "render-gateway-attempt-cleanup-job", Short: "Render a remote-stop verification Job for one dispatcher attempt", RunE: func(cmd *cobra.Command, _ []string) error {
+		body, err := k8spoc.GatewayAttemptCleanupJob(renderAttemptName, renderAttemptImage, renderAttemptID)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, string(body))
+		return err
+	}}
+	renderAttemptCleanup.Flags().StringVar(&renderAttemptName, "job-name", "", "Durable fs-poc-<run>-<attempt> Job name")
+	renderAttemptCleanup.Flags().StringVar(&renderAttemptImage, "runner-image", "", "Runner image pinned by digest or revision-and-content tag")
+	renderAttemptCleanup.Flags().Int64Var(&renderAttemptID, "attempt-id", 0, "Durable PostgreSQL attempt ID")
+	for _, flag := range []string{"job-name", "runner-image", "attempt-id"} {
+		_ = renderAttemptCleanup.MarkFlagRequired(flag)
+	}
+	root.AddCommand(renderAttemptCleanup)
 	renderCleanup := &cobra.Command{Use: "render-gateway-cleanup-job", Short: "Render a cleanup Job using the runner template", RunE: func(cmd *cobra.Command, _ []string) error {
 		body, err := k8spoc.GatewayCleanupJob(cleanupJobName, cleanupRunnerImage)
 		if err != nil {
@@ -122,6 +148,7 @@ func newK8sPoCCmd() *cobra.Command {
 		name, help string
 		run        func(context.Context, int64) error
 	}{
+		{"cancel", "Stop one active gateway-demo attempt and retain its reservation until remote cleanup", k8spoc.Cancel},
 		{"retry", "Requeue one cleaned-up failed run", k8spoc.Retry},
 		{"dismiss", "Acknowledge one cleaned-up failed run", k8spoc.Dismiss},
 	} {

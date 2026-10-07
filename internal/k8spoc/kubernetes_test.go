@@ -122,3 +122,14 @@ func TestKubernetesClientTLSAndCredentials(t *testing.T) {
 		t.Fatal("accepted missing Kubernetes host")
 	}
 }
+
+func TestGatewayAttemptCreationRequiresPinnedRunnerImage(t *testing.T) {
+	k := &kubeClient{image: "stub-image"}
+	a := attempt{id: 4, name: "fs-poc-7-1", harness: "gateway-demo", source: "fixture-source"}
+	if _, err := k.create(context.Background(), a); err == nil {
+		t.Fatal("gateway attempt silently fell back to a stub without a pinned runner image")
+	}
+	if _, err := k.createGatewayCleanup(context.Background(), a); err == nil {
+		t.Fatal("gateway cleanup accepted an unpinned runner image")
+	}
+}

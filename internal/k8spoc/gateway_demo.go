@@ -44,8 +44,14 @@ type gatewayDemoResult struct {
 
 func gatewayDemoWithRunner(ctx context.Context, jobName, sandboxName, evidenceDir string, run func(context.Context, string) error, deleteSandbox func(string) error) (resultErr error) {
 	derived, ok := ownedGatewayNames(jobName)
+	if !ok {
+		if name, err := attemptSandboxName(jobName); err == nil {
+			derived = []string{name}
+			ok = true
+		}
+	}
 	if !ok || len(derived) != 1 || derived[0] != sandboxName {
-		return fmt.Errorf("demo Job and sandbox names must use matching fs-demo-<hex> and fs-<hex> identities")
+		return fmt.Errorf("demo Job and sandbox names must have matching owned identities")
 	}
 	if evidenceDir == "" {
 		return fmt.Errorf("persistent evidence directory is required")

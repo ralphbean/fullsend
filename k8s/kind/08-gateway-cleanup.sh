@@ -4,6 +4,28 @@ source "$(dirname "$0")/lib.sh"
 profile_arg "$@"
 require_owned
 
+cleanup_dispatcher_attempts() {
+  local rows attempt_id attempt_name cleanup_name
+  rows="$(k -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -AtF '|' -c \
+    "SELECT a.id,a.job_name FROM attempts a JOIN selected_runs r ON r.id=a.run_id WHERE r.harness='gateway-demo' ORDER BY a.id")"
+  [[ -n "$rows" ]] || return 0
+  status '🔧' 'Stopping dispatcher runners and verifying every owned remote sandbox is absent'
+  while IFS='|' read -r attempt_id attempt_name; do
+    [[ -n "$attempt_id" ]] || continue
+    [[ "$attempt_name" =~ ^fs-poc-[1-9][0-9]*-[1-9][0-9]*$ ]] || fail "Invalid stored attempt Job name: $attempt_name"
+    cleanup_name="fs-clean-${attempt_name#fs-poc-}"
+    k -n fullsend-runner delete "job/$attempt_name" --wait=true --ignore-not-found >/dev/null
+    k -n fullsend-runner delete "job/$cleanup_name" --wait=true --ignore-not-found >/dev/null
+    (cd "$REPO_ROOT" && go run ./cmd/fullsend k8s-poc render-gateway-attempt-cleanup-job \
+      --job-name "$attempt_name" --attempt-id "$attempt_id" --runner-image "$runner_image") | k apply -f - >/dev/null
+    if ! k -n fullsend-runner wait --for=condition=complete "job/$cleanup_name" --timeout=180s >/dev/null; then
+      k -n fullsend-runner logs "job/$cleanup_name" -c runner >&2 || true
+      fail "Remote stop for $attempt_name is unverified; keeping the kind cluster"
+    fi
+    status '✅' "Remote absence verified for dispatcher attempt $attempt_name"
+  done <<< "$rows"
+}
+
 runner_image=''
 if [[ -s "$STATE_DIR/gateway-runner-image" ]]; then
   runner_image="$(cat "$STATE_DIR/gateway-runner-image")"
@@ -39,6 +61,7 @@ for _ in {1..180}; do
   if [[ "$succeeded" == 1 ]]; then
     k -n fullsend-runner logs "job/$job_name" -c runner
     status '✅' 'Gateway cleanup completed'
+    cleanup_dispatcher_attempts
     exit 0
   fi
   if [[ -n "$failed" && "$failed" != 0 ]]; then

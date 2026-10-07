@@ -1,6 +1,18 @@
 #!/bin/sh
 set -eu
 
+# !!! TEMPORARY TLS VERIFICATION BYPASS !!!
+# !!! https://github.com/openshift-online/hypershell/issues/443 tracks the CA fix.
+# OpenShell prints its insecure-TLS warning on stdout, which corrupts JSON
+# and sandbox command output. Keep the warning visible on stderr and suppress
+# only that OpenShell log target before invoking the real CLI.
+if [ "${OPENSHELL_GATEWAY_INSECURE:-}" = true ]; then
+  printf '%s\n' \
+    '!!! OPENSHELL_GATEWAY_INSECURE=true: gateway TLS certificate verification is DISABLED for this PoC !!!' \
+    '!!! Track the CA and public-hostname fix: https://github.com/openshift-online/hypershell/issues/443 !!!' >&2
+  export RUST_LOG="${RUST_LOG:-warn},openshell_cli::tls=error"
+fi
+
 # Gateway client-credentials tokens last five minutes and have no refresh
 # token. Fullsend makes many separate OpenShell CLI calls over a longer run.
 # Serialize the exchange so concurrent provider operations do not race while

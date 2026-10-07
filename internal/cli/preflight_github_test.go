@@ -268,6 +268,20 @@ func TestCheckSandboxGitHubConnectivity_SkipNoToken(t *testing.T) {
 	assert.Equal(t, "GH_TOKEN not set in sandbox", result.SkipReason)
 }
 
+func TestCheckSandboxGitHubConnectivity_SkipNoTokenAfterOpenShellWarning(t *testing.T) {
+	calls := 0
+	usePreflightGitHubExec(t, func(_, _ string, _ time.Duration) (string, string, int, error) {
+		calls++
+		return "2026-10-06 WARN openshell_cli::tls: TLS verification is disabled\nNOTOKEN\n", "", 0, nil
+	})
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.Skipped)
+	assert.Equal(t, "GH_TOKEN not set in sandbox", result.SkipReason)
+	assert.Equal(t, 1, calls, "the GitHub API must not be called without a token")
+}
+
 func TestCheckSandboxGitHubConnectivity_SkipNoGh(t *testing.T) {
 	usePreflightGitHubExec(t, func(_, _ string, _ time.Duration) (string, string, int, error) {
 		return "NOGH", "", 0, nil

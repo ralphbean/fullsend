@@ -34,7 +34,8 @@ func (f *fakeJobs) handler(w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		var input struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
 			} `json:"metadata"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -44,6 +45,7 @@ func (f *fakeJobs) handler(w http.ResponseWriter, r *http.Request) {
 		job := kubeJob{}
 		job.Metadata.Name = input.Metadata.Name
 		job.Metadata.UID = "uid-" + input.Metadata.Name
+		job.Metadata.Labels = input.Metadata.Labels
 		f.jobs[input.Metadata.Name] = job
 		if f.lostCreate {
 			f.lostCreate = false
@@ -95,8 +97,183 @@ func (f *fakeJobs) finish(name string, success bool) {
 		job.Status.Succeeded = 1
 	} else {
 		job.Status.Failed = 1
+		job.Status.Conditions = append(job.Status.Conditions, kubeJobCondition{Type: "Failed", Status: "True"})
 	}
 	f.jobs[name] = job
+}
+
+func TestGatewayAttemptKeepsReservationUntilIndependentStop(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	admin, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	schema := "poc_gateway_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := u.Query()
+	query.Set("search_path", schema)
+	u.RawQuery = query.Encode()
+	t.Setenv("DATABASE_URL", u.String())
+	if err := Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fixturePath := filepath.Join(dir, "fixture.json")
+	selectionPath := filepath.Join(dir, "selection.json")
+	fixture := `{"tenant":"fixture-tenant","source":"fixture-source","cursor":"c1","observations":[
+		{"key":"one","entity":"one","revision":"1","kind":"gateway_demo","behavior":"success","authorized":true},
+		{"key":"two","entity":"two","revision":"1","kind":"gateway_demo","behavior":"success","authorized":true}]}`
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(selectionPath, []byte(`{"by_kind":{"gateway_demo":["gateway-demo"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Poll(ctx, fixturePath, selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	fake := &fakeJobs{jobs: map[string]kubeJob{}}
+	server := httptest.NewServer(http.HandlerFunc(fake.handler))
+	defer server.Close()
+	k := &kubeClient{client: server.Client(), host: server.URL, token: "fixture", namespace: "fullsend-runner", image: "stub-image", gatewayImage: "localhost/fullsend-poc-runner:abcdef123456-0123456789abcdef"}
+	fake.lostCreate = true
+	if err := dispatchWithClient(ctx, conn, k); err == nil {
+		t.Fatal("lost gateway Job create response was treated as certain success")
+	}
+	if err := Cancel(ctx, 1); err == nil {
+		t.Fatal("accepted cancellation before Job creation was reconciled")
+	}
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	fake.finish("fs-poc-1-1", true)
+	fake.mu.Lock()
+	delete(fake.jobs, "fs-poc-2-1") // Simulate a runner Job disappearing without terminal evidence.
+	fake.mu.Unlock()
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	var reserved int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM selected_runs WHERE state='reserved'`).Scan(&reserved); err != nil || reserved != 2 {
+		t.Fatalf("reservations released before remote cleanup: count=%d err=%v", reserved, err)
+	}
+	fake.mu.Lock()
+	firstCleanup := fake.jobs["fs-clean-1-1"]
+	firstCleanup.Metadata.Labels["fullsend.ai/attempt"] = "foreign"
+	fake.jobs["fs-clean-1-1"] = firstCleanup
+	fake.mu.Unlock()
+	if err := dispatchWithClient(ctx, conn, k); err == nil {
+		t.Fatal("accepted cleanup Job with a foreign attempt label")
+	}
+	fake.mu.Lock()
+	firstCleanup.Metadata.Labels["fullsend.ai/attempt"] = "1"
+	firstCleanup.Status.Failed = 1 // One failed Pod is retriable; the Job is not terminal.
+	fake.jobs["fs-clean-1-1"] = firstCleanup
+	fake.mu.Unlock()
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal("treated a retriable cleanup Pod failure as terminal:", err)
+	}
+	fake.finish("fs-clean-1-1", true)
+	fake.finish("fs-clean-2-1", false)
+	if err := dispatchWithClient(ctx, conn, k); err == nil {
+		t.Fatal("failed cleanup Job did not hold its reservation")
+	}
+	var succeeded, failed int
+	if err := conn.QueryRow(ctx, `SELECT (SELECT count(*) FROM selected_runs WHERE state='succeeded'),(SELECT count(*) FROM selected_runs WHERE state='failed')`).Scan(&succeeded, &failed); err != nil || succeeded != 0 || failed != 0 {
+		t.Fatalf("terminal runner released reservation before Job deletion: succeeded=%d failed=%d err=%v", succeeded, failed, err)
+	}
+	if err := dispatchWithClient(ctx, conn, k); err == nil {
+		t.Fatal("failed cleanup Job did not hold its reservation")
+	}
+	if err := conn.QueryRow(ctx, `SELECT (SELECT count(*) FROM selected_runs WHERE state='succeeded'),(SELECT count(*) FROM selected_runs WHERE state='failed')`).Scan(&succeeded, &failed); err != nil || succeeded != 1 || failed != 0 {
+		t.Fatalf("unexpected outcomes before retry: succeeded=%d failed=%d err=%v", succeeded, failed, err)
+	}
+	fake.mu.Lock()
+	delete(fake.jobs, "fs-clean-2-1")
+	fake.mu.Unlock()
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	fake.finish("fs-clean-2-1", true)
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT (SELECT count(*) FROM selected_runs WHERE state='succeeded'),(SELECT count(*) FROM selected_runs WHERE state='failed')`).Scan(&succeeded, &failed); err != nil || succeeded != 1 || failed != 1 {
+		t.Fatalf("unexpected final outcomes: succeeded=%d failed=%d err=%v", succeeded, failed, err)
+	}
+	if err := os.WriteFile(fixturePath, []byte(`{"tenant":"fixture-tenant","source":"fixture-source","cursor":"c2","observations":[{"key":"three","entity":"three","revision":"1","kind":"gateway_demo","behavior":"success","authorized":true}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Poll(ctx, fixturePath, selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cancel(ctx, 0); err == nil {
+		t.Fatal("accepted zero run ID for cancellation")
+	}
+	if err := Cancel(ctx, 1); err == nil {
+		t.Fatal("accepted cancellation of a completed run")
+	}
+	if err := Cancel(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cancel(ctx, 3); err == nil {
+		t.Fatal("accepted duplicate cancellation")
+	}
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM selected_runs WHERE state='reserved'`).Scan(&reserved); err != nil || reserved != 1 {
+		t.Fatalf("cancellation released remote reservation early: %d %v", reserved, err)
+	}
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	fake.finish("fs-clean-3-1", true)
+	if err := dispatchWithClient(ctx, conn, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM selected_runs WHERE state='failed'`).Scan(&failed); err != nil || failed != 2 {
+		t.Fatalf("cancellation did not finish as cleaned-up failure: %d %v", failed, err)
+	}
+	if err := completeGatewayAttempt(ctx, conn, attempt{id: 3, runID: 3}); err == nil {
+		t.Fatal("repeated completion accepted an attempt no longer awaiting cleanup")
+	}
+	if _, err := conn.Exec(ctx, `UPDATE attempts SET state='cleanup',outcome='' WHERE id=3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := completeGatewayAttempt(ctx, conn, attempt{id: 3, runID: 3}); err == nil {
+		t.Fatal("cleanup without a terminal outcome released reservation")
+	}
+	if _, err := conn.Exec(ctx, `UPDATE attempts SET outcome='failed' WHERE id=3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := completeGatewayAttempt(ctx, conn, attempt{id: 3, runID: 3}); err == nil {
+		t.Fatal("cleanup completed without a reserved run")
+	}
 }
 
 func TestDurableFixtureCycle(t *testing.T) {

@@ -15,8 +15,8 @@ import (
 )
 
 type kubeClient struct {
-	client                        *http.Client
-	host, token, namespace, image string
+	client                                      *http.Client
+	host, token, namespace, image, gatewayImage string
 }
 
 func newKubeClient() (*kubeClient, error) {
@@ -28,7 +28,12 @@ func newKubeClient() (*kubeClient, error) {
 	if port == "" {
 		port = "443"
 	}
-	return newKubeClientWithFiles(host, port, os.Getenv("STUB_IMAGE"), "/var/run/secrets/kubernetes.io/serviceaccount/token", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+	k, err := newKubeClientWithFiles(host, port, os.Getenv("STUB_IMAGE"), "/var/run/secrets/kubernetes.io/serviceaccount/token", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+	if err != nil {
+		return nil, err
+	}
+	k.gatewayImage = os.Getenv("GATEWAY_RUNNER_IMAGE")
+	return k, nil
 }
 
 func newKubeClientWithFiles(host, port, image, tokenPath, caPath string) (*kubeClient, error) {
@@ -52,14 +57,30 @@ func newKubeClientWithFiles(host, port, image, tokenPath, caPath string) (*kubeC
 
 type kubeJob struct {
 	Metadata struct {
-		Name string `json:"name"`
-		UID  string `json:"uid"`
+		Name   string            `json:"name"`
+		UID    string            `json:"uid"`
+		Labels map[string]string `json:"labels"`
 	} `json:"metadata"`
 	Status struct {
-		Active    int `json:"active"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
+		Active     int                `json:"active"`
+		Succeeded  int                `json:"succeeded"`
+		Failed     int                `json:"failed"`
+		Conditions []kubeJobCondition `json:"conditions"`
 	} `json:"status"`
+}
+
+type kubeJobCondition struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+func jobFailed(job kubeJob) bool {
+	for _, condition := range job.Status.Conditions {
+		if condition.Type == "Failed" && condition.Status == "True" {
+			return true
+		}
+	}
+	return false
 }
 
 func (k *kubeClient) request(ctx context.Context, method, path string, body any, output any) (int, error) {
@@ -111,8 +132,40 @@ func (k *kubeClient) get(ctx context.Context, name string) (kubeJob, bool, error
 
 func (k *kubeClient) create(ctx context.Context, a attempt) (kubeJob, error) {
 	var job kubeJob
-	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", stubJob(a, k.namespace, k.image), &job)
+	var body any = stubJob(a, k.namespace, k.image)
+	if isGatewayAttempt(a) {
+		data, err := GatewayAttemptJob(a.name, k.gatewayImage, a.id)
+		if err != nil {
+			return job, err
+		}
+		if err := json.Unmarshal(data, &body); err != nil {
+			return job, err
+		}
+	}
+	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", body, &job)
 	return job, err
+}
+
+func (k *kubeClient) createGatewayCleanup(ctx context.Context, a attempt) (kubeJob, error) {
+	var job kubeJob
+	data, err := GatewayAttemptCleanupJob(a.name, k.gatewayImage, a.id)
+	if err != nil {
+		return job, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return job, err
+	}
+	_, err = k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", body, &job)
+	return job, err
+}
+
+func isGatewayAttempt(a attempt) bool {
+	return a.harness == "gateway-demo" && a.source == "fixture-source"
+}
+
+func cleanupJobName(name string) string {
+	return "fs-clean-" + strings.TrimPrefix(name, "fs-poc-")
 }
 
 func (k *kubeClient) delete(ctx context.Context, name, uid string) error {

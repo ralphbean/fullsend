@@ -192,12 +192,12 @@ func selectPending(ctx context.Context, conn *pgx.Conn) error {
 }
 
 type attempt struct {
-	id, runID                                          int64
-	name, uid, state, behavior, tenant, source, entity string
+	id, runID                                                   int64
+	name, uid, state, behavior, tenant, source, entity, harness string
 }
 
 func activeAttempts(ctx context.Context, conn *pgx.Conn) ([]attempt, error) {
-	rows, err := conn.Query(ctx, `SELECT a.id,a.run_id,a.job_name,a.job_uid,a.state,o.behavior,o.tenant,o.source,o.entity
+	rows, err := conn.Query(ctx, `SELECT a.id,a.run_id,a.job_name,a.job_uid,a.state,o.behavior,o.tenant,o.source,o.entity,r.harness
 		FROM attempts a JOIN selected_runs r ON r.id=a.run_id JOIN observations o ON o.id=r.observation_id
 		WHERE a.state IN ('creating','active','cleanup') ORDER BY a.id LIMIT 50`)
 	if err != nil {
@@ -207,7 +207,7 @@ func activeAttempts(ctx context.Context, conn *pgx.Conn) ([]attempt, error) {
 	var out []attempt
 	for rows.Next() {
 		var a attempt
-		if err = rows.Scan(&a.id, &a.runID, &a.name, &a.uid, &a.state, &a.behavior, &a.tenant, &a.source, &a.entity); err != nil {
+		if err = rows.Scan(&a.id, &a.runID, &a.name, &a.uid, &a.state, &a.behavior, &a.tenant, &a.source, &a.entity, &a.harness); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -231,14 +231,14 @@ func reserve(ctx context.Context, conn *pgx.Conn, capGlobal, capTenant int) (*at
 	if global >= capGlobal {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT r.id,o.tenant,o.source,o.entity,o.behavior FROM selected_runs r JOIN observations o ON o.id=r.observation_id WHERE r.state='waiting' ORDER BY r.id LIMIT 50`)
+	rows, err := tx.Query(ctx, `SELECT r.id,o.tenant,o.source,o.entity,o.behavior,r.harness FROM selected_runs r JOIN observations o ON o.id=r.observation_id WHERE r.state='waiting' ORDER BY r.id LIMIT 50`)
 	if err != nil {
 		return nil, err
 	}
 	var waiting []attempt
 	for rows.Next() {
 		var a attempt
-		if err = rows.Scan(&a.runID, &a.tenant, &a.source, &a.entity, &a.behavior); err != nil {
+		if err = rows.Scan(&a.runID, &a.tenant, &a.source, &a.entity, &a.behavior, &a.harness); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -315,3 +315,29 @@ func Retry(ctx context.Context, runID int64) error { return changeFailedRun(ctx,
 
 // Dismiss acknowledges one failed run after its Job has been cleaned up.
 func Dismiss(ctx context.Context, runID int64) error { return changeFailedRun(ctx, runID, "dismissed") }
+
+// Cancel requests an active gateway-demo attempt stop while retaining its reservation.
+// Reconciliation removes the runner Job and verifies the sandbox is absent
+// before the selected run becomes a cleaned-up failure.
+func Cancel(ctx context.Context, runID int64) error {
+	if runID <= 0 {
+		return fmt.Errorf("run ID must be positive")
+	}
+	conn, err := connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(ctx)
+	tag, err := conn.Exec(ctx, `UPDATE attempts a SET state='cleanup',outcome='failed'
+		FROM selected_runs r JOIN observations o ON o.id=r.observation_id
+		WHERE a.run_id=r.id AND r.id=$1 AND r.state='reserved'
+		AND r.harness='gateway-demo' AND o.source='fixture-source'
+		AND a.state='active'`, runID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("run %d has no cancellable gateway attempt", runID)
+	}
+	return nil
+}
