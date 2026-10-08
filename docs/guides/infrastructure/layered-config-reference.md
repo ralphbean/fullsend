@@ -121,6 +121,7 @@ the overlay → base → code defaults chain.
 | `keep_history` | `*bool` | Scalar override | `true` (history appended) |
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
+| `workflows` | `[]WorkflowEntry` | Keyed merge by `name` (case-insensitive): an overlay entry replaces the parent entry of the same name, new names are appended | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
 | `tracker` | `string` | Scalar override | `""` (none) |
@@ -373,8 +374,8 @@ agents:
 ### `allowed_remote_resources` — union with deny-all
 
 This field controls which URL prefixes are allowed for remote resources
-(agents, policies, skills, plugins, profiles, providers, and base
-composition). It uses special three-way semantics:
+(agents, policies, skills, plugins, profiles, providers, workflow
+definitions, and base composition). It uses special three-way semantics:
 
 | Overlay value | Behavior |
 |---------------|----------|

@@ -17,6 +17,12 @@ type AgentLister interface {
 	AgentEntries() []AgentEntry
 }
 
+// WorkflowLister provides read access to the workflows: entries
+// (ADR 0130).
+type WorkflowLister interface {
+	WorkflowEntries() []WorkflowEntry
+}
+
 // KillSwitchReader provides read access to the kill switch state.
 type KillSwitchReader interface {
 	IsKillSwitchActive() bool
@@ -47,6 +53,7 @@ type StatusNotificationsReader interface {
 // interface rather than accessing struct fields directly.
 type ConfigReader interface {
 	AgentLister
+	WorkflowLister
 	KillSwitchReader
 	AllowedResourcesReader
 	CreateIssuesReader
@@ -224,6 +231,20 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 	}
 
 	return result
+}
+
+// WorkflowEntries returns the merged workflows: list. nil (key omitted)
+// inherits the parent's entries; otherwise a local entry replaces the
+// parent entry of the same name and new names are appended.
+func (c *perRepoConfig) WorkflowEntries() []WorkflowEntry {
+	var parent []WorkflowEntry
+	if c.parent != nil {
+		parent = c.parent.WorkflowEntries()
+	}
+	if c.Workflows == nil {
+		return parent
+	}
+	return mergeWorkflowEntries(parent, c.Workflows)
 }
 
 // LocalAgentEntries returns only this layer's own agents: entries (what

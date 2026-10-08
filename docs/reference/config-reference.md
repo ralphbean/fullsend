@@ -49,8 +49,13 @@ agents:                              # Registered agent sources and per-agent tu
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
 
+# ── Workflow definitions (ADR 0130) ──────────────────────────
+workflows:                           # Workflow-definition repositories a harness names in workflow.definition
+  - name: sample-pipeline            # Name harnesses use; also the plugin directory name in the sandbox
+    source: https://github.com/example-org/sample-pipeline/tree/<commit-sha>#sha256=<tree-hash>  # Tree URL at a full commit sha, or a path in this repository
+
 # ── Remote resources ─────────────────────────────────────────
-allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
+allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, workflows, policies, skills, plugins, profiles, providers, and base composition)
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
@@ -189,10 +194,104 @@ For agent registration and management, see
 [`fullsend agent`](../cli/agent.md) and
 [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
+### `workflows`
+
+Workflow-definition repositories
+([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)):
+Claude Code plugins that ship workflow scripts under `workflows/<name>.js`.
+Each entry is pinned once here; a harness names it in its
+[`workflow:`](harness-reference.md#field-details) field, and the runner
+uploads it as a Claude plugin.
+
+```yaml
+workflows:
+  - name: sample-pipeline
+    source: https://github.com/example-org/sample-pipeline/tree/0123456789abcdef0123456789abcdef01234567#sha256=<tree-hash>
+  - name: self
+    source: .                        # this repository's own root
+```
+
+- **`name`** — Required. Letters, digits, `_` and `-`; unique (compared
+  without case). It is the name a harness uses in `workflow.definition` and the
+  name of the plugin directory in the sandbox, so it must not match the
+  basename of a `plugins:` entry of the same harness, compared without case.
+  `tree` and `content` (in any case) are reserved for fullsend's cache and
+  refused.
+- **`source`** — Required. One of:
+  - A github.com tree URL today, like `plugins:`, at a **full 40-character
+    commit sha**, at the repository root or a sub-directory, ending in
+    `#sha256=<tree-hash>`:
+    `https://github.com/<owner>/<repo>/tree/<commit-sha>[/<path>]#sha256=<tree-hash>`.
+    Branches and tags are refused, so the definition cannot move under the
+    pin. The URL must be covered by `allowed_remote_resources`. Tree URLs on
+    other forges are refused; a local source works on any forge.
+  - A path relative to the top of the git checkout that holds `.fullsend/`
+    (not relative to `.fullsend/` itself); `.` is that checkout's root.
+    Absolute paths, `..` segments, backslashes and `.git` or
+    `.fullsend-cache` segments are refused.
+
+A remote definition is fetched at the pinned commit and its tree hash is
+verified against the `#sha256=` fragment. A local definition is read from the
+git index: only files git tracks under the path are delivered, with their
+working-tree content, so commit or `git add` a file for it to be delivered.
+Untracked and ignored files, nested repositories (such as a `target-repo/`
+checkout in the workspace) and submodule contents are never read, a tracked
+file deleted from the working tree is an error, and fullsend's configuration
+directory (`.fullsend/`) is left out whenever it lies under the source. A
+source that is `.fullsend/` or lies inside it, such as
+`.fullsend/workflows/pipeline`, is refused: put the definition in another
+directory. A local definition is hashed for the run's checks and cache but has
+no pin and is not recorded in `.fullsend/lock.yaml`.
+A local source needs the repository that holds `.fullsend/` to be a git
+checkout.
+
+The definition must be a Claude Code plugin: `.claude-plugin/plugin.json` (or
+fullsend's root `plugin.json` convention) at its root. Claude Code namespaces
+the plugin's workflows by the `name` in `.claude-plugin/plugin.json`; without
+that file the namespace is the plugin directory name, which is the
+`workflows:` entry `name`. fullsend accepts only letters, digits, `_` and `-`
+in the manifest `name` and in workflow names, which is stricter than Claude
+Code. A manifest that sets the `workflows` key (a custom workflow path) is
+refused for now; keep the scripts in `workflows/` and drop the key.
+
+Claude Code names a plugin workflow by its script's `meta.name`, and lists
+the workflow only when `export const meta = { ... }` is the script's first
+statement and a plain object literal. The harness `workflow.name` is that
+`meta.name`; fullsend checks that `workflows/<name>.js` exists and that its
+leading meta object, read as text without running the script, declares the
+same `name` once, as a quoted string without escapes. fullsend accepts only
+strings, numbers, `true`, `false`, `null`, and arrays and objects of these as
+meta values, and needs `;` right after the closing `}` (spaces or tabs may
+come between); it reads nothing after the `;`. Use LF or CRLF line endings.
+Keep the file name and `meta.name` identical.
+
+A symlink whose target is inside the definition is replaced by the target's
+content; a symlink that leaves the definition, dangles (including a link to a
+file git does not track, for a local source) or loops is refused, as is a
+`source` path with a symlink among its components. `.git/` and
+`.fullsend-cache/` are never part of the tree. The tree hash covers the tree
+after this step. A local sub-directory source hashes like a remote tree URL at
+the same sub-directory when its tracked files match the commit, unless the
+local tree leaves `.fullsend/` out; then it differs from the remote tree. `fullsend lock`
+records each remote definition a harness uses under the field `workflow`, and
+treats the lock entry as out of date when the `workflows:` pin it was made
+from changes.
+
+`workflows:` and the harness `workflow:` field need the fullsend release that
+introduced them. Older releases silently ignore both keys in `config.yaml` and
+in harness files, because those files are decoded non-strictly: such a release
+runs the agent without the definition. A `repos.yaml` managed `config:` layer is
+decoded strictly, so an older release refuses one that sets `workflows:` with an
+unknown-field error. In the layered config system, entries merge by
+`name`: an overlay entry replaces the parent entry of the same name, new names
+are appended, and an omitted key inherits the parent's list. As with
+`agents:`, an overlay `workflows: []` does not clear the parent's list.
+
 ### `allowed_remote_resources`
 
 URL prefixes allowed for remote resources in harness files — agent sources
-(`agents:` entries with URLs), policies, skills, plugins, profiles, providers,
+(`agents:` entries with URLs), workflow definitions (`workflows:` entries with
+URLs), policies, skills, plugins, profiles, providers,
 and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
 config-level list. Default prefixes cover the fullsend and agents repositories.

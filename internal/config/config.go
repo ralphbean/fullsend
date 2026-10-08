@@ -676,6 +676,10 @@ type perRepoConfig struct {
 
 	Roles  []string     `yaml:"roles,omitempty"`
 	Agents []AgentEntry `yaml:"agents,omitempty"`
+	// Workflows pins workflow-definition repositories that harnesses
+	// name in their workflow: field (ADR 0130). Merged with the parent
+	// layer by name; see WorkflowEntries.
+	Workflows []WorkflowEntry `yaml:"workflows,omitempty"`
 	// AllowedRemoteResources holds the locally-set allowed remote
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
@@ -798,6 +802,7 @@ type perRepoConfigMarshal struct {
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
+	Workflows              []WorkflowEntry           `yaml:"workflows,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
 	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
@@ -822,6 +827,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
+		Workflows:           c.Workflows,
 		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
@@ -858,7 +864,10 @@ func (c *perRepoConfig) Validate() error {
 	// default prefix pass validation.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+	if err := validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true); err != nil {
+		return err
+	}
+	return validateWorkflowEntries(c.WorkflowEntries(), c.AllowedResources(), true)
 }
 
 // validateLocalFields checks the fields that do not need a resolved
@@ -951,7 +960,10 @@ func ValidateManagedLayer(w PerRepoConfigWriter) error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), false, false)
+	if err := validateAgentEntries(c.AgentEntries(), c.AllowedResources(), false, false); err != nil {
+		return err
+	}
+	return validateWorkflowEntries(c.WorkflowEntries(), c.AllowedResources(), false)
 }
 
 // ValidateMergedManaged validates a repos.yaml managed configuration
@@ -971,7 +983,10 @@ func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
+	if err := validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false); err != nil {
+		return err
+	}
+	return validateWorkflowEntries(c.WorkflowEntries(), c.AllowedResources(), true)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of

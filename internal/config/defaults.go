@@ -50,6 +50,9 @@ func (d *perRepoDefaults) ConfigRoles() []string { return PerRepoDefaultRoles() 
 // AgentEntries returns nil — no agents are configured by default.
 func (d *perRepoDefaults) AgentEntries() []AgentEntry { return nil }
 
+// WorkflowEntries returns nil — no workflow definitions are pinned by default.
+func (d *perRepoDefaults) WorkflowEntries() []WorkflowEntry { return nil }
+
 // AllowedResources returns the default allowed remote resource prefixes.
 func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRemoteResources() }
 

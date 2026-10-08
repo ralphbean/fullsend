@@ -305,6 +305,9 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.Agents != nil {
 		out.Agents = cloneAgentEntries(src.Agents)
 	}
+	if src.Workflows != nil {
+		out.Workflows = append(make([]WorkflowEntry, 0, len(src.Workflows)), src.Workflows...)
+	}
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
@@ -372,6 +375,10 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		parentOnly := &perRepoConfig{Agents: out.Agents}
 		childLayer := &perRepoConfig{Agents: cloneAgentEntries(child.Agents), parent: parentOnly}
 		out.Agents = cloneAgentEntries(childLayer.AgentEntries())
+	}
+	if child.Workflows != nil {
+		merged := mergeWorkflowEntries(out.Workflows, child.Workflows)
+		out.Workflows = append(make([]WorkflowEntry, 0, len(merged)), merged...)
 	}
 	if child.AllowedRemoteResources != nil {
 		tmp := &perRepoConfig{
