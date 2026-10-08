@@ -381,6 +381,32 @@ resolved from the local cache without network access. If the harness has changed
 or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
 
+For a harness with `workflow:`, freshness also depends on the `workflows:` pin in
+`config.yaml`, which lives outside the harness. `fullsend lock` treats the entry as
+out of date when that pin changes (`Lock entry for <agent> is out of date: ...`) and
+re-resolves it. `fullsend run` uses the `config.yaml` pin and warns when it differs
+from `lock.yaml`, for example:
+
+```text
+Workflow definition differs from lock.yaml: config.yaml pins workflows "<name>" to <url>#sha256=<hash>, but lock.yaml has <url>#sha256=<hash>; this run uses the config.yaml pin. Run 'fullsend lock <agent>' to update.
+```
+
+When `lock.yaml` has no entry for the agent, the warning reads
+`lock.yaml has no entry for <agent>, so workflows "<name>" (<url>) is not locked. Run 'fullsend lock <agent>' to update.`
+Both add `--fullsend-dir <dir>` to the suggested command when the run used a
+directory other than `.fullsend`.
+
+`workflows:` in `config.yaml` and `workflow:` in a harness need the fullsend
+release that introduced them. Older releases silently ignore both keys in
+`config.yaml` and harness files, which they decode non-strictly, and run the
+agent without the definition; a `repos.yaml` managed `config:` layer is decoded
+strictly, so they refuse one that sets `workflows:`. A lock file that records a
+workflow definition is written as `version: 2`, and older releases refuse to read
+it instead of replaying the definition as a skill: they warn
+`unsupported lock file version 2 (expected 1)` and resolve without the lock file,
+and an older `fullsend lock` writes a new file in its place. A lock file without
+a workflow definition stays `version: 1`.
+
 Use `--update` to force re-resolution even if the lock entry appears current.
 
 ### Status notification flags

@@ -252,7 +252,10 @@ that file the namespace is the plugin directory name, which is the
 `workflows:` entry `name`. fullsend accepts only letters, digits, `_` and `-`
 in the manifest `name` and in workflow names, which is stricter than Claude
 Code. A manifest that sets the `workflows` key (a custom workflow path) is
-refused for now; keep the scripts in `workflows/` and drop the key.
+refused for now; keep the scripts in `workflows/` and drop the key. No Claude
+plugin in the harness's `plugins:` may use the same namespace (compared
+without case), since both would answer to the same `/<namespace>:` commands;
+a remote plugin is checked once `fullsend run` or `fullsend lock` has fetched it.
 
 Claude Code names a plugin workflow by its script's `meta.name`, and lists
 the workflow only when `export const meta = { ... }` is the script's first
@@ -269,7 +272,9 @@ A symlink whose target is inside the definition is replaced by the target's
 content; a symlink that leaves the definition, dangles (including a link to a
 file git does not track, for a local source) or loops is refused, as is a
 `source` path with a symlink among its components. `.git/` and
-`.fullsend-cache/` are never part of the tree. The tree hash covers the tree
+`.fullsend-cache/` are never part of the tree. A file whose name ends in
+`.tmp.<digits>` is refused, because fullsend's cache uses that pattern for its
+own temporary files; rename it. The tree hash covers the tree
 after this step. A local sub-directory source hashes like a remote tree URL at
 the same sub-directory when its tracked files match the commit, unless the
 local tree leaves `.fullsend/` out; then it differs from the remote tree. `fullsend lock`
@@ -282,7 +287,13 @@ introduced them. Older releases silently ignore both keys in `config.yaml` and
 in harness files, because those files are decoded non-strictly: such a release
 runs the agent without the definition. A `repos.yaml` managed `config:` layer is
 decoded strictly, so an older release refuses one that sets `workflows:` with an
-unknown-field error. In the layered config system, entries merge by
+unknown-field error. A `.fullsend/lock.yaml` that records a workflow definition
+is written as `version: 2`, which older releases refuse to read rather than
+replay the definition as a skill: they warn
+`unsupported lock file version 2 (expected 1)` and resolve without the lock
+file, and an older `fullsend lock` writes a new file in its place. A lock file
+without a workflow definition stays `version: 1`. In the
+layered config system, entries merge by
 `name`: an overlay entry replaces the parent entry of the same name, new names
 are appended, and an omitted key inherits the parent's list. As with
 `agents:`, an overlay `workflows: []` does not clear the parent's list.
