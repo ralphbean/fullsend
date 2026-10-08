@@ -37,6 +37,10 @@ plugins:                             # Directories a runtime loads (ADR 0094)
       FFF_MULTIGREP: "1"             # Exported before the runtime starts (code-loaded entries)
     pi:
       args: ["--fff-mode", "override"] # Flags the extension registers with pi.registerFlag
+workflow:                            # Workflow from a config.yaml workflows: definition (ADR 0130); Claude runtime only
+  definition: sample-pipeline        # A config.yaml workflows: name
+  name: run-all                      # The script's meta.name; workflows/run-all.js must exist and declare it
+  args: "triage issue 42"            # Optional; one literal string the script receives unsplit as args
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -192,6 +196,33 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 `plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
+**`workflow`** — Names a workflow inside a workflow-definition repository ([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)). The definition is pinned once in [`config.yaml` `workflows:`](config-reference.md#workflows); the harness only names it:
+
+- **`definition`** (required) — a `workflows:` name from `config.yaml`. An unknown name fails resolution with the list of names that exist.
+- **`name`** (required) — the workflow's `meta.name`, which is the name Claude Code gives the workflow. fullsend finds the script by file name, so it checks that `workflows/<name>.js` exists in the definition and that its `meta.name` is `<name>`: keep the file name and `meta.name` identical. A name with no script fails resolution with the list of workflows the definition ships. fullsend allows only letters, digits, `_` and `-` here, which is stricter than Claude Code.
+- **`args`** (optional) — one literal string. Claude Code hands the text after the workflow command to the script as a single string, unsplit, in `args`; there is no argument splitting or quoting. No NUL, carriage return or newline.
+
+The script must begin with its meta object, as Claude Code requires for listing it: `export const meta = { ... }` is the first statement (comments may precede it) and a plain object literal, with `name` as a single- or double-quoted string. fullsend also needs `;` right after the closing `}`:
+
+```js
+export const meta = { name: 'run-all', description: 'Run every phase' };
+```
+
+fullsend reads this object as text, without running the script, and accepts only strings, numbers, `true`, `false`, `null`, and arrays and objects of these as values. Only spaces or tabs may come between the closing `}` and the `;`; fullsend reads nothing after the `;`. Save the script with LF or CRLF line endings: a lone carriage return, U+2028 or U+2029 before the `;` fails resolution. A meta that is not first, is not a plain object literal (a spread, a computed key, a variable, a template literal or a regular expression as a value), lacks the `;` after its closing `}`, declares `name` more than once or with an escape, or whose `name` differs from the file name fails resolution.
+
+For a remote source the runner fetches the definition at its pinned commit and verifies its tree hash against the `#sha256=` pin; for a local source it reads the files git tracks under the path (commit or `git add` a file for it to be delivered) and hashes them for the run's checks and cache, without a pin or a lock entry. It then checks that the definition is a Claude Code plugin and uploads it like a `plugins:` entry, passed to `claude` with `--plugin-dir` under the `workflows:` name. Like every plugin, it is injection-scanned before upload when the harness has security enabled (the default; `security.enabled: false` turns the scan off). Its namespace is the `name` in `.claude-plugin/plugin.json`, or the `workflows:` name when that file is absent. The run plan prints:
+
+```text
+Workflow: <definition> (<commit>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+Workflow: <definition> (local <path>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+```
+
+where `<commit>` and `<hash>` are the first 12 characters of the commit sha and the tree hash, and `<path>` is the `workflows:` source as written. A harness with `workflow:` fails at plan time under every runtime except `claude` (and the `dummy` and `dummy-playback` test runtimes). A plugin in `plugins:` whose basename equals the `workflows:` name, compared without case, is refused, since both would land in the same sandbox directory.
+
+This release delivers the definition but does not start the workflow: the run still uses the agent's default prompt. Until the runner starts it, the agent prompt must start it, for example by telling the agent to call the `Workflow` tool with name `<namespace>:<name>` and the args string.
+
+`workflow` is a top-level field only: it is not part of `ForgeConfig`, so a `workflow:` key under `forge:` or `overlays:` is silently ignored, as for `plugins`. An older fullsend binary ignores the field too, so a harness that uses it must state the fullsend release it needs.
+
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
@@ -232,7 +263,7 @@ More-specific entries go last so they override broader defaults.
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
-| `security` | Child replaces entirely |
+| `security`, `workflow` | Child replaces entirely |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
 
 ## Referencing resources: local vs. remote

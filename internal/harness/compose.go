@@ -730,6 +730,11 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if base.Skills != nil || child.Skills != nil {
 		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}
+	// Workflow: child replaces base wholesale (if non-nil).
+	if child.Workflow == nil && base.Workflow != nil {
+		w := *base.Workflow
+		child.Workflow = &w
+	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
 		merged = append(merged, base.Plugins...)
