@@ -972,6 +972,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail(err.Error())
 		return fmt.Errorf("%s: %w", runCfg.source, err)
 	}
+	// Likewise the workflows: entries (ADR 0130), on every run: a harness
+	// without workflow: does not resolve them, but a bad entry must still
+	// fail here rather than on the run that first uses it.
+	if orgCfg != nil {
+		if err := config.ValidateWorkflowEntries(orgCfg.WorkflowEntries(), orgAllowlist); err != nil {
+			printer.StepFail(err.Error())
+			return fmt.Errorf("%s: %w", runCfg.source, err)
+		}
+	}
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -1104,6 +1113,39 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
 	}
 
+	// Check the runtime before resolving the workflow: definition (ADR
+	// 0130), so a pi or codex agent fails before the definition is
+	// fetched; the harness's own remote resources (base, skills, plugins,
+	// providers) were resolved above. The definition joins h.Plugins, so
+	// ValidateFilesExist below checks it and bootstrap uploads it like any
+	// Claude plugin.
+	if err := checkWorkflowRuntime(h, agentName, runtimeBackend.Runtime.Name()); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	resolvedWorkflow, workflowDep, err := resolveHarnessWorkflow(ctx, h, orgCfg, absFullsendDir, resolve.ResolveOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+		OrgAllowlist:  orgAllowlist,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
+	})
+	if err != nil {
+		printer.StepFail("Workflow definition resolution failed")
+		return fmt.Errorf("resolving workflow definition: %w", err)
+	}
+	if workflowDep != nil {
+		if workflowDep.CacheHit {
+			printer.StepInfo(fmt.Sprintf("Resolved %s (cache hit)", workflowDep.URL))
+		} else {
+			printer.StepInfo(fmt.Sprintf("Fetched %s -> %s", workflowDep.URL, workflowDep.LocalPath))
+		}
+	}
+	if resolvedWorkflow != nil {
+		warnWorkflowLockDrift(printer, absFullsendDir, fullsendDir, agentName, resolvedWorkflow, workflowDep)
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -1206,6 +1248,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if len(h.Plugins) > 0 {
 		printer.KeyValue("Plugins", strings.Join(describePlugins(h.Plugins), ", "))
+	}
+	if resolvedWorkflow != nil {
+		printer.KeyValue("Workflow", describeWorkflow(resolvedWorkflow))
 	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)

@@ -146,7 +146,7 @@ cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
 | Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
-| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
+| Not supported | Claude-format plugins (named and skipped), `workflow:` (refused at plan time), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
 
 ## Running it locally
 

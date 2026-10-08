@@ -46,6 +46,37 @@ Image:     fullsend-sandbox:latest
 
 The **Runtime** line shows which runtime was selected and the config source it was read from. When no `config.yaml` exists, the source reads `default (config not found)`.
 
+### Workflow line
+
+When the harness sets [`workflow:`](../reference/harness-reference.md#field-details), the plan
+block also prints a **Workflow** line. It appears only for such a harness:
+
+```text
+Workflow: <definition> (<commit>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+Workflow: <definition> (local <path>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+```
+
+The first form is a remote `workflows:` source: the first 12 characters of the pinned commit and
+of the tree hash. The second is a local source, shown as written in `config.yaml`. After
+`delivered as plugin` comes the Claude Code plugin name (the `name` in
+`.claude-plugin/plugin.json`, or the `workflows:` name without that file), then the workflow name.
+
+`fullsend run` resolves the workflow definition after the harness and its own remote resources
+(`base:`, skills, plugins, providers) and before it checks files and creates the sandbox:
+
+1. Every `config.yaml` `workflows:` entry is validated on every run, also when the harness has no
+   `workflow:`. A bad entry fails the run before the sandbox is created.
+2. A harness with `workflow:` fails unless the runtime is `claude` (or a `dummy` test runtime):
+   `workflow: needs the claude runtime; agent "<agent>" resolves to "<runtime>"`.
+3. The definition is fetched at its pinned commit and checked against its `#sha256=` pin (taken
+   from the cache when it is there), or, for a local source, read from the files git tracks.
+4. It is delivered as a Claude Code plugin: uploaded with the harness's plugins, injection-scanned
+   like them, and passed to `claude` with `--plugin-dir`, under the `workflows:` name.
+5. When the pin differs from `.fullsend/lock.yaml`, the run warns and uses the `config.yaml` pin.
+
+The runner delivers the definition but does not start the workflow; the agent prompt has to.
+See [`workflows:`](../reference/config-reference.md#workflows) for sources and pins.
+
 ## Runtime selection
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.

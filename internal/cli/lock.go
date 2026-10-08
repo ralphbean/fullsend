@@ -197,8 +197,20 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	if !update && lf != nil {
 		if entry := lf.Lookup(agentName); entry != nil && !entry.IsStale(harnessHash) {
-			printer.StepDone(fmt.Sprintf("Lock entry for %s is up to date (%d dependencies)", agentName, len(entry.Dependencies)))
-			return nil, nil
+			// The workflow: pin lives in config.yaml, outside the harness
+			// hash, so compare it with the lock entry too.
+			drift, recheck := lockWorkflowDrift(harnessPath, orgCfg, entry, func() (*harness.Harness, error) {
+				return composeHarnessOffline(ctx, harnessPath, absFullsendDir, forgeFlag, orgCfg, rFlags)
+			})
+			switch {
+			case recheck:
+				printer.StepInfo(fmt.Sprintf("Re-resolving the lock entry for %s: its base: chain could not be composed from local files and the cache, so the workflow definition it uses is checked by resolving", agentName))
+			case drift != "":
+				printer.StepInfo(fmt.Sprintf("Lock entry for %s is out of date: %s", agentName, drift))
+			default:
+				printer.StepDone(fmt.Sprintf("Lock entry for %s is up to date (%d dependencies)", agentName, len(entry.Dependencies)))
+				return nil, nil
+			}
 		}
 	}
 
@@ -225,10 +237,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	// Seed dependencies with the agent source fetch (if harness was
 	// resolved from a config URL rather than a local file).
+	// Dependencies are deduplicated by URL, except the workflow
+	// definition (see lockDepKey).
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
 	for _, dep := range agentSourceDeps {
-		seen[dep.URL] = true
+		seen[lockDepKey(dep.Field, dep.URL)] = true
 		allDeps = append(allDeps, dep)
 	}
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
@@ -274,8 +288,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 		newBaseDeps := 0
 		for _, bd := range baseDeps {
-			if !seen[bd.URL] {
-				seen[bd.URL] = true
+			if key := lockDepKey(bd.Field, bd.URL); !seen[key] {
+				seen[key] = true
 				newBaseDeps++
 				allDeps = append(allDeps, resolve.Dependency{
 					Field:     bd.Field,
@@ -288,6 +302,26 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					Warning:   bd.Warning,
 				})
 			}
+		}
+
+		// The workflow: definition is pinned in config.yaml, not in the
+		// harness, so HasURLReferences cannot see it; resolve it on its
+		// own (ADR 0130). Local definitions have no dependency to lock.
+		resolvedWorkflow, workflowDep, wfErr := resolveHarnessWorkflow(ctx, h, orgCfg, absFullsendDir, resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+			FetchPolicy:   policy,
+			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+			OrgAllowlist:  orgAllowlist,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      composeGitToken,
+		})
+		if wfErr != nil {
+			printer.StepFail("Workflow definition resolution failed")
+			return nil, fmt.Errorf("resolving workflow definition: %w", wfErr)
+		}
+		if workflowDep != nil && !seen[lockDepKey(workflowDep.Field, workflowDep.URL)] {
+			seen[lockDepKey(workflowDep.Field, workflowDep.URL)] = true
+			allDeps = append(allDeps, *workflowDep)
 		}
 
 		if !h.HasURLReferences() {
@@ -367,8 +401,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if dep.Warning != "" {
 				printer.StepWarn(dep.Warning)
 			}
-			if !seen[dep.URL] {
-				seen[dep.URL] = true
+			if key := lockDepKey(dep.Field, dep.URL); !seen[key] {
+				seen[key] = true
 				allDeps = append(allDeps, dep)
 			}
 		}
@@ -382,11 +416,27 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepFail("Plugin validation failed")
 			return nil, err
 		}
+		// URL plugins had no Claude Code plugin name to compare when the
+		// workflow definition resolved above; compare it now that they
+		// are fetched, as fullsend run does.
+		if resolvedWorkflow != nil {
+			if err := resolve.CheckWorkflowNamespace(h, resolvedWorkflow); err != nil {
+				printer.StepFail("Workflow definition resolution failed")
+				return nil, fmt.Errorf("resolving workflow definition: %w", err)
+			}
+		}
 	}
 
 	if len(allDeps) == 0 {
-		printer.StepDone("Harness has no remote dependencies — nothing to lock")
-		return nil, nil
+		if lockedWorkflowDep(lf.Lookup(agentName)) == nil {
+			printer.StepDone("Harness has no remote dependencies — nothing to lock")
+			return nil, nil
+		}
+		// The entry pins a workflow definition the harness no longer
+		// fetches (workflow: removed, or the definition is now a local
+		// source). Rewrite it without, so run does not compare the
+		// config.yaml pin against a stale one.
+		printer.StepDone("Harness has no remote dependencies any more — clearing its locked workflow definition")
 	}
 
 	now := time.Now().UTC()
@@ -400,7 +450,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			FetchedAt: dep.FetchedAt,
 		}
 		if dep.Type == "directory" {
-			_, dirEntry, err := fetch.CacheGetDir(absFullsendDir, dep.SHA256)
+			_, dirEntry, err := cachedDirFor(dep.Field, absFullsendDir, dep.SHA256)
 			if err != nil {
 				return nil, fmt.Errorf("reading cached directory for %s: %w", dep.Field, err)
 			}
@@ -781,7 +831,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		var cachedContent []byte
 
 		if lockDep.Type == "directory" {
-			treePath, _, err := fetch.CacheGetDir(workspaceRoot, lockDep.SHA256)
+			treePath, _, err := cachedDirFor(lockDep.Field, workspaceRoot, lockDep.SHA256)
 			if err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
@@ -1001,6 +1051,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case strings.HasPrefix(m.field, "providers["):
 			// Providers are consumed via ResolvedProvider list; URL entries
 			// are stripped from h.Providers below.
+		case m.field == resolve.WorkflowDependencyField:
+			// The workflow definition is resolved from config.yaml by
+			// resolve.ResolveWorkflowDefinition, which finds it in the cache
+			// by its pinned tree hash. This entry exists for cache
+			// verification only; the default case would append it as a skill.
 		case m.field == "agent_source":
 			// Agent source is informational — the harness is already loaded
 			// from the resolved path. This entry exists for cache verification
