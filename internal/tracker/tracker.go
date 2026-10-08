@@ -52,6 +52,11 @@ type Issue struct {
 	Body   Body
 	URL    string
 	Labels []string
+
+	// Key is the tracker-assigned issue key (e.g. "PROJ-43"). It is only
+	// populated by JiraClient.CreateIssue, carrying the key exactly as
+	// Jira returned it; it is empty for other trackers and operations.
+	Key string
 }
 
 // Comment represents a comment on an issue.
