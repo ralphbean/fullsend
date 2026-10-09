@@ -1,0 +1,29 @@
+agent: agents/gateway-demo.md
+model: claude-haiku-4-5@20251001
+role: triage
+slug: gateway-demo
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:d27c0a503c0c971cf6d9fe80dc983e26673aa49ee9b6ef35d78fb9117714b371
+timeout_minutes: 17
+sandbox_timeout_seconds: 600
+policy: policies/base.yaml
+providers:
+  - providers/vertex-ai.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: /wif/sandbox-vertex-check.sh
+    dest: /sandbox/workspace/sandbox-vertex-check.sh
+  - src: /wif/wif-wait-for-rotation.sh
+    dest: /sandbox/workspace/wif-wait-for-rotation.sh
+env:
+  sandbox:
+    CLAUDE_CODE_USE_VERTEX: "1"
+    ANTHROPIC_VERTEX_PROJECT_ID: ${ANTHROPIC_VERTEX_PROJECT_ID}
+    CLOUD_ML_REGION: ${CLOUD_ML_REGION}
+    GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json

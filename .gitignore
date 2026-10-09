@@ -27,5 +27,11 @@ docs/.vitepress/dist/
 coverage.out
 k8s/.local/
 k8s/.state/
+k8s/gcp/*.tfvars
+k8s/gcp/*.tfstate*
+k8s/gcp/*.tfplan
+k8s/gcp/.terraform/
+k8s/gcp/crash.log
+k8s/gcp/crash.*.log
 # QualityFlow working directory; nothing under it belongs in a commit.
 outputs/

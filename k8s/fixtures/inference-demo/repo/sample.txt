@@ -1,0 +1,1 @@
+Milestone 6 verifies that a Kubernetes workload identity can access Vertex AI.

@@ -1,0 +1,5 @@
+project_id                       = "YOUR_DEVELOPMENT_PROJECT_ID"
+project_number                   = "123456789012"
+issuer_uri                       = "https://YOUR_KIND_ISSUER"
+jwks_file                        = "../.local/gcp/kind-jwks.json"
+inference_service_account_id     = "fullsend-kind-poc-inference"

@@ -144,7 +144,29 @@ k8s/kind/10-refresh-inference-wif.sh \
   --provider "$GCP_WIF_PROVIDER"
 ```
 
-The script checks that the existing provider's issuer matches this cluster, rejects a JWKS containing private key fields, and writes only public keys under ignored `k8s/.local/gcp/`. It does not create IAM resources or distribute credentials. A scoped JSON key may be kept there for the earlier static-credential demo; WIF avoids mounting that key in Pods. The successful manual `poc4` Job proves remote inference for one run; it does not prove token rotation or authentication after a kind rebuild.
+The script checks that the existing provider's issuer matches this cluster, rejects a JWKS containing private key fields, and writes only public keys under ignored `k8s/.local/gcp/`. It does not create IAM resources or distribute credentials. The optional pinned OpenTofu module in [`gcp/`](gcp/README.md) declares the pool, provider, inference service account and minimum IAM grants; import existing resources into local state before applying.
+
+Run the standalone wrong-identity, Vertex and projected-token rotation checks after deploying the runner profile and refreshing WIF keys:
+
+```sh
+k8s/kind/15-wif-inference.sh \
+  --project-number "$GCP_PROJECT_NUMBER" --pool "$GCP_WIF_POOL" \
+  --provider "$GCP_WIF_PROVIDER" \
+  --service-account-email "$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --vertex-project "$GCP_PROJECT_ID"
+```
+
+Then exercise the normal Fullsend run path through HyperShell across a projected-token rotation:
+
+```sh
+k8s/kind/16-wif-fullsend.sh \
+  --project-number "$GCP_PROJECT_NUMBER" --pool "$GCP_WIF_POOL" \
+  --provider "$GCP_WIF_PROVIDER" \
+  --service-account-email "$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --vertex-project "$GCP_PROJECT_ID"
+```
+
+The second script uses an authenticated loopback refresh endpoint in the trusted runner. Fullsend refreshes the inference-only assertion into its active sandbox; the sandbox verifies the assertion changed, exchanges it, impersonates the scoped inference service account, and makes a harmless Vertex request. Its run may take about 15 minutes. The integration evidence records assertion SHA-256 hashes and outcomes, never assertions or access tokens. Neither script uses a service-account JSON key.
 
 A killed Pod can leave remote sandboxes named in `intent.json`. `08-gateway-cleanup.sh` stops probe, demo, and dispatcher gateway Jobs, reconciles their sandbox names through the gateway, and writes `cleanup.json` on the PVC. `destroy.sh` and `reset.sh` invoke it before deleting the cluster and stop if cleanup fails. Keep the gateway reachable until teardown finishes. The dispatcher also starts a per-attempt cleanup Job during normal reconciliation. That Job retries three transient failures; a terminal failure retains the reservation. After the gateway recovers, delete only the failed `fs-clean-<run>-<attempt>` Job and let the dispatcher recreate it. Keep the cluster and evidence PVC until remote absence is verified.
 
