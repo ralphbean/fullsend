@@ -51,6 +51,10 @@ func (d *Driver) CommitFile(ctx context.Context, owner, repo, path, message stri
 	return err
 }
 
+func (d *Driver) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
+	return d.Client.DeleteFile(ctx, owner, repo, path, message)
+}
+
 func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error) {
 	return d.Client.GetIssue(ctx, owner, repo, number)
 }

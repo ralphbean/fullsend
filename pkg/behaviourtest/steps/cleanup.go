@@ -295,6 +295,21 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Workflows cleanup ---
+	// Restore the pre-scenario workflows: list so a later scenario on
+	// this slot does not resolve a workflow definition it did not set.
+	if w.WorkflowsOverridden {
+		if err := cleanupRetry(w.Logf, "restore workflows", func() error {
+			return RestoreWorkflows(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore workflows: %v", err)
+		}
+	}
+	// Delete the definition files the scenario committed.
+	if len(w.WorkflowDefinitionFiles) > 0 {
+		RemoveWorkflowDefinitionFiles(w)
+	}
+
 	// --- OWNERS auth cleanup ---
 	if w.OwnersAuthActivated {
 		cleanupOwnersAuth(w)

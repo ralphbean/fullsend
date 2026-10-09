@@ -83,6 +83,10 @@ func (p *panickingSCM) CreateFork(context.Context, string, string, string) (stri
 func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
+
+func (p *panickingSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
@@ -175,6 +179,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		AllowedResourcesOriginal:   []string{"https://example.com/"},
 		AgentsOverridden:           true,
 		AgentsOriginal:             []config.AgentEntry{{Name: "test", Source: "harness/test.yaml"}},
+		WorkflowsOverridden:        true,
+		WorkflowsOriginal:          []config.WorkflowEntry{{Name: "sample", Source: "."}},
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
@@ -195,6 +201,8 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Nil(t, w.AllowedResourcesOriginal)
 	assert.False(t, w.AgentsOverridden)
 	assert.Nil(t, w.AgentsOriginal)
+	assert.False(t, w.WorkflowsOverridden)
+	assert.Nil(t, w.WorkflowsOriginal)
 	assert.Nil(t, w.PlaybackEntries)
 	assert.False(t, w.PlaybackCommitted)
 	assert.Nil(t, w.ConsumedHarnessRunIDs)

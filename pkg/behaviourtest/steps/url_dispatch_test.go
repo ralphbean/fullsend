@@ -1146,6 +1146,10 @@ func (f *fakeURLSCM) CreateFork(context.Context, string, string, string) (string
 func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
+
+func (f *fakeURLSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
 func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }

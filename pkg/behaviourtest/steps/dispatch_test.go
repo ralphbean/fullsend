@@ -235,6 +235,10 @@ func (f *fakeDispatchSCM) CreateFork(context.Context, string, string, string) (s
 func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
+
+func (f *fakeDispatchSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
 func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }

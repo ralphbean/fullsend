@@ -140,6 +140,20 @@ type World struct {
 	AgentsOverridden bool
 	AgentsOriginal   []config.AgentEntry
 
+	// WorkflowsOverridden records that this scenario modified the
+	// workflows: list in config.yaml; WorkflowsOriginal holds the
+	// pre-scenario value (nil when the key was absent). CleanupScenario
+	// restores it so the next scenario on this slot does not inherit a
+	// workflow definition from the previous lessee.
+	WorkflowsOverridden bool
+	WorkflowsOriginal   []config.WorkflowEntry
+
+	// WorkflowDefinitionFiles lists the repo paths of the workflow
+	// definition files this scenario committed, each recorded before it
+	// is written. CleanupScenario deletes them so the next scenario on
+	// this slot does not find the previous lessee's definition.
+	WorkflowDefinitionFiles []string
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.

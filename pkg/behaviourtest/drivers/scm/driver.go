@@ -29,6 +29,9 @@ type Driver interface {
 	// implicit default-branch/HEAD read.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+	// DeleteFile deletes a file from the repository's default branch in
+	// one commit. Returns forge.ErrNotFound if the file does not exist.
+	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	// DeleteBranch deletes a branch from a repository. Returns
 	// forge.ErrNotFound if the branch does not exist.

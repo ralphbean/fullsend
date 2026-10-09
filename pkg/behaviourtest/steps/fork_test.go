@@ -678,6 +678,10 @@ func (f *fakeForkSCM) CommitFileToFork(_ context.Context, _, _, _, _, _ string, 
 	return nil
 }
 
+func (f *fakeForkSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
+
 func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
 	f.createForkPRCalled = true
 	if f.createForkPRErr != nil {

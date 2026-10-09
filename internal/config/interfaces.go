@@ -119,6 +119,7 @@ type PerRepoConfigWriter interface {
 	SetInferenceOpenAI(OpenAIWIFConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
+	SetWorkflows([]WorkflowEntry)
 }
 
 // --- Compile-time assertions ---
@@ -553,6 +554,10 @@ func (c *perRepoConfig) SetOwnersFileAuthEnabled(v bool) {
 
 // SetAgents replaces the registered agent entries.
 func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
+
+// SetWorkflows replaces this layer's workflows: entries; nil omits the
+// key, so the entries are inherited from the parent layer again.
+func (c *perRepoConfig) SetWorkflows(workflows []WorkflowEntry) { c.Workflows = workflows }
 
 // SetAllowedRemoteResources replaces the allowed remote resource
 // prefixes.

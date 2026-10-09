@@ -680,3 +680,22 @@ func TestEnsureRepoPublic_ContextCancelledWhileWaiting(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, c.calls)
 }
+
+func TestDeleteFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+	ctx := context.Background()
+	if err := d.CommitFile(ctx, "owner", "repo", "dir/file.txt", "add", []byte("x")); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if err := d.DeleteFile(ctx, "owner", "repo", "dir/file.txt", "remove"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fc.DeletedFiles) != 1 || fc.DeletedFiles[0].Path != "dir/file.txt" || fc.DeletedFiles[0].Message != "remove" {
+		t.Fatalf("deleted files = %+v", fc.DeletedFiles)
+	}
+	if err := d.DeleteFile(ctx, "owner", "repo", "dir/file.txt", "remove"); !forge.IsNotFound(err) {
+		t.Fatalf("second delete: want not found, got %v", err)
+	}
+}

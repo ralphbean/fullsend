@@ -228,3 +228,24 @@ func TestWorkflowEntry_IsRemote(t *testing.T) {
 	assert.True(t, ValidWorkflowName("sample_1-x"))
 	assert.False(t, ValidWorkflowName("a/b"))
 }
+
+func TestPerRepoConfigWriter_SetWorkflows(t *testing.T) {
+	cfg, err := ParsePerRepoConfigWriter([]byte("runtime: dummy\n"))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.WorkflowEntries())
+
+	cfg.SetWorkflows([]WorkflowEntry{{Name: "sample-pipeline", Source: "pipelines/sample-pipeline"}})
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "workflows:\n    - name: sample-pipeline\n      source: pipelines/sample-pipeline\n")
+
+	reparsed, err := ParsePerRepoConfigWriter(data)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sample-pipeline"}, WorkflowNames(reparsed.WorkflowEntries()))
+
+	// nil drops the key again, so a restored config reads as before.
+	reparsed.SetWorkflows(nil)
+	data, err = reparsed.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "workflows:")
+}
