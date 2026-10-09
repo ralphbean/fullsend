@@ -197,7 +197,8 @@ For agent registration and management, see
 ### `workflows`
 
 Workflow-definition repositories
-([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)):
+([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md);
+walkthrough: [Run a workflow definition repository](../guides/user/workflow-definitions.md)):
 Claude Code plugins that ship workflow scripts under `workflows/<name>.js`.
 Each entry is pinned once here; a harness names it in its
 [`workflow:`](harness-reference.md#field-details) field, and the runner

@@ -219,7 +219,7 @@ you would add or change it by hand.
 | `harness/<name>.yaml` | `timeout_minutes:` | always | `--timeout-minutes` / spec `timeout_minutes` | — |
 | `harness/<name>.yaml` | `trigger:` | always | `--on` / `--trigger` or spec `on`/`trigger` | — |
 | `harness/<name>.yaml` | `validation_loop:` | only when asked for | `--validation-loop` / spec `validation_loop` | — |
-| `harness/<name>.yaml` | `workflow:` | only when asked for; `config.yaml` `workflows:` is not written | `--workflow` / spec `workflow` | `args:` — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) |
+| `harness/<name>.yaml` | `workflow:` | only when asked for; `config.yaml` `workflows:` is not written | `--workflow` / spec `workflow` | `args:` — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) and [Run a workflow definition repository](workflow-definitions.md) |
 | `harness/<name>.yaml` | `overlays:` (commented) | only for pi on an `openai/` model | — | uncomment for Vertex sub-agents ([Pick a route](#pick-a-route)); write your own for other conditional fields |
 | `harness/<name>.yaml` | `skills:`, `base:` | never | — | see [Skills](#skills), [Harness composition with `base`](#harness-composition-with-base) |
 | `agents/<name>.md` | `name:`, `model:` | always | `<name>` / resolved model | — |
@@ -671,6 +671,7 @@ allowed_remote_resources:
 - [Harness Field Reference](../../reference/harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
 - [Custom Agent Identity](custom-agent-identity.md) — using a standalone mint for custom GitHub App identity
 - [Chaining Follow-up Workflows](chaining-follow-up-workflows.md) — act on an agent's result from your own workflow with the job token
+- [Run a workflow definition repository](workflow-definitions.md) — run a Claude Code workflow pipeline from an agent; [authoring one](workflow-definition-authors.md)
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults

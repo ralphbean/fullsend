@@ -68,6 +68,14 @@ These are the places Claude Code differs from pi — useful when comparing a run
   hook wiring is passed explicitly with `--settings` so it loads regardless, but repo-supplied hooks
   are a separate exposure to be aware of.
 
+## Workflow definitions
+
+Only this runtime starts a harness [`workflow:`](../reference/harness-reference.md#field-details): the
+runner delivers the definition as a plugin with `--plugin-dir` and passes `/<plugin>:<workflow> <args>`
+instead of the agent prompt, while `--agent` still sets the main loop. pi and codex refuse such a
+harness before the sandbox starts. See
+[Run a workflow definition repository](../guides/user/workflow-definitions.md).
+
 ## Troubleshooting
 
 **The model is not what you asked for.** Check `metrics.json`: `requested_model` is what was handed
@@ -94,3 +102,4 @@ marker passes through untouched.
 - [Agent runtimes](../runtimes.md) — choosing and selecting a runtime
 - [Pi](pi.md) — the second runtime, for Grok and Gemini
 - [Running agents locally](../guides/user/running-agents-locally.md) — local runs
+- [Run a workflow definition repository](../guides/user/workflow-definitions.md) — start a Claude Code workflow from a harness
