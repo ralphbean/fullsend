@@ -52,14 +52,19 @@ When the harness sets [`workflow:`](../reference/harness-reference.md#field-deta
 block also prints a **Workflow** line. It appears only for such a harness:
 
 ```text
-Workflow: <definition> (<commit>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
-Workflow: <definition> (local <path>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+Workflow: <definition> (<commit>, sha256:<hash>) → /<namespace>:<name> <args>
+Workflow: <definition> (local <path>, sha256:<hash>) → /<namespace>:<name> <args>
 ```
 
 The first form is a remote `workflows:` source: the first 12 characters of the pinned commit and
-of the tree hash. The second is a local source, shown as written in `config.yaml`. After
-`delivered as plugin` comes the Claude Code plugin name (the `name` in
-`.claude-plugin/plugin.json`, or the `workflows:` name without that file), then the workflow name.
+of the tree hash. The second is a local source, shown as written in `config.yaml`. After the arrow
+comes the command the runner starts: the Claude Code plugin name (the `name` in
+`.claude-plugin/plugin.json`, or the `workflows:` name without that file), the workflow name, and
+the expanded `args` (left out when unset). A local run of a sample definition printed:
+
+```text
+    Workflow: sample-pipeline (local pipelines/sample-pipeline, sha256:e645c8d64206) → /sample-pipeline:triage-fanout issue 8204
+```
 
 `fullsend run` resolves the workflow definition after the harness and its own remote resources
 (`base:`, skills, plugins, providers) and before it checks files and creates the sandbox:
@@ -74,8 +79,8 @@ of the tree hash. The second is a local source, shown as written in `config.yaml
    like them, and passed to `claude` with `--plugin-dir`, under the `workflows:` name.
 5. When the pin differs from `.fullsend/lock.yaml`, the run warns and uses the `config.yaml` pin.
 
-The runner delivers the definition but does not start the workflow; the agent prompt has to.
-See [`workflows:`](../reference/config-reference.md#workflows) for sources and pins.
+The runner then starts the workflow: the command above replaces the agent prompt on every
+iteration, and `metrics.json` records it in its `workflow` object. See [`workflows:`](../reference/config-reference.md#workflows) for sources and pins.
 
 ## Runtime selection
 
@@ -163,6 +168,7 @@ depend on the process cwd.
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, and `claude` when Claude Code's result carries `modelUsage`). See below |
+| `workflow` | Present when the harness sets [`workflow:`](../reference/harness-reference.md#field-details): `{definition, source, pin_sha256, command}`, the `workflows:` name, its source (without the `#sha256=` pin, or the local path), the tree hash and the command the runner started. Written on every runtime, `dummy` included |
 
 #### Per-model usage
 

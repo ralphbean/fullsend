@@ -40,7 +40,7 @@ plugins:                             # Directories a runtime loads (ADR 0094)
 workflow:                            # Workflow from a config.yaml workflows: definition (ADR 0130); Claude runtime only
   definition: sample-pipeline        # A config.yaml workflows: name
   name: run-all                      # The script's meta.name; workflows/run-all.js must exist and declare it
-  args: "triage issue 42"            # Optional; one literal string the script receives unsplit as args
+  args: "issue ${ISSUE_NUMBER}"      # Optional; one string the script receives unsplit as args
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -153,7 +153,7 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
 
-**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. A harness with [`workflow`](#field-details) gets no feedback: its retry starts the same workflow command. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
@@ -200,7 +200,7 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 - **`definition`** (required) — a `workflows:` name from `config.yaml`. An unknown name fails resolution with the list of names that exist.
 - **`name`** (required) — the workflow's `meta.name`, which is the name Claude Code gives the workflow. fullsend finds the script by file name, so it checks that `workflows/<name>.js` exists in the definition and that its `meta.name` is `<name>`: keep the file name and `meta.name` identical. A name with no script fails resolution with the list of workflows the definition ships. fullsend allows only letters, digits, `_` and `-` here, which is stricter than Claude Code.
-- **`args`** (optional) — one literal string. Claude Code hands the text after the workflow command to the script as a single string, unsplit, in `args`; there is no argument splitting or quoting. No NUL, carriage return or newline.
+- **`args`** (optional) — one string. `${VAR}` references expand from the runner environment, as in `env:`, so a harness can name the work item (`issue ${ISSUE_NUMBER}`). Claude Code hands the text after the workflow command to the script as a single string, unsplit, in `args`; there is no argument splitting or quoting. No NUL, carriage return or newline, before or after expansion: a variable that holds one fails the run with `workflow.args "<args>" expands to more than one line; the variables it names must not hold NUL, carriage return or newline characters`. Args reach the model prompt, the run plan and `metrics.json`, so they must never carry a credential. A `${VAR}` whose name is credential-shaped (ending in `_TOKEN`, `_API_KEY`, `_PRIVATE_KEY`, `_ACCESS_KEY`, `_SECRET_KEY`, `_PROXY`, `_PASSWORD` or `_CREDENTIALS`, containing `_SECRET`, or starting with `OTEL_`) is refused when the harness loads, so `fullsend lock` reports it; at run time so is a runner-only credential that no harness may expand. Both print `workflow.args references ${<NAME>}, which names a credential (<rule>); pass work-item identifiers such as ${ISSUE_NUMBER} instead`. After expansion, a value that looks like a credential fails the run with `workflow.args expands to a value that looks like a credential; pass work-item identifiers only`; the value is not printed. Traces record the workflow without its args.
 
 The script must begin with its meta object, as Claude Code requires for listing it: `export const meta = { ... }` is the first statement (comments may precede it) and a plain object literal, with `name` as a single- or double-quoted string. fullsend also needs `;` right after the closing `}`:
 
@@ -213,13 +213,15 @@ fullsend reads this object as text, without running the script, and accepts only
 For a remote source the runner fetches the definition at its pinned commit and verifies its tree hash against the `#sha256=` pin; for a local source it reads the files git tracks under the path (commit or `git add` a file for it to be delivered) and hashes them for the run's checks and cache, without a pin or a lock entry. It then checks that the definition is a Claude Code plugin and uploads it like a `plugins:` entry, passed to `claude` with `--plugin-dir` under the `workflows:` name. Like every plugin, it is injection-scanned before upload when the harness has security enabled (the default; `security.enabled: false` turns the scan off). Its namespace is the `name` in `.claude-plugin/plugin.json`, or the `workflows:` name when that file is absent. The run plan prints:
 
 ```text
-Workflow: <definition> (<commit>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
-Workflow: <definition> (local <path>, sha256:<hash>) delivered as plugin <namespace>; workflow <name>
+Workflow: <definition> (<commit>, sha256:<hash>) → /<namespace>:<name> <args>
+Workflow: <definition> (local <path>, sha256:<hash>) → /<namespace>:<name> <args>
 ```
 
-where `<commit>` and `<hash>` are the first 12 characters of the commit sha and the tree hash, and `<path>` is the `workflows:` source as written. A harness with `workflow:` fails at plan time under every runtime except `claude` (and the `dummy` and `dummy-playback` test runtimes). A plugin in `plugins:` whose basename equals the `workflows:` name, compared without case, is refused, since both would land in the same sandbox directory.
+where `<commit>` and `<hash>` are the first 12 characters of the commit sha and the tree hash, `<path>` is the `workflows:` source as written, and ` <args>` is left out when `args` is unset. A harness with `workflow:` fails at plan time under every runtime except `claude` (and the `dummy` and `dummy-playback` test runtimes). A plugin in `plugins:` whose basename equals the `workflows:` name, compared without case, is refused, since both would land in the same sandbox directory.
 
-This release delivers the definition but does not start the workflow: the run still uses the agent's default prompt. Until the runner starts it, the agent prompt must start it, for example by telling the agent to call the `Workflow` tool with name `<namespace>:<name>` and the args string.
+The runner starts the workflow: instead of the default agent prompt it passes `/<namespace>:<name> <args>` to `claude`, still with `--agent`, so the agent file sets the main loop's tools and instructions. If the agent file has a `tools:` list, it must name `Workflow`; otherwise the run fails at plan time with `workflow: agent <name> lists tools: without Workflow, so it cannot start /<namespace>:<name>; add Workflow to its tools:`. It must not list `Workflow` in `disallowedTools:` either (`workflow: agent <name> lists Workflow in disallowedTools:, so it cannot start /<namespace>:<name>; remove Workflow from its disallowedTools:`). An agent without `tools:` gets every tool not in its `disallowedTools:`. An agent file whose frontmatter cannot be parsed fails the run at plan time. If the org runs the tool allowlist hook (`FULLSEND_TOOL_ALLOWLIST`), the list must name `Workflow` as well; the plan-time check does not read it, and the hook blocks the first tool call otherwise. `metrics.json` records what was started in its [`workflow` object](../cli/run.md#metricsjson-fields) on every runtime, so a `dummy` run, which runs no model, still shows the command.
+
+A `validation_loop` retry starts the same command again. A Claude Code workflow resumes only within the session that started it, so the workflow must skip finished work from its own durable state (files in the repository or the workspace). With `feedback_mode: append`, the validation output is **not** passed to the workflow: the command stays as written, and the run prints once `The workflow restarts from its own state; validation feedback is not passed to it`.
 
 `workflow` is a top-level field only: it is not part of `ForgeConfig`, so a `workflow:` key under `forge:` or `overlays:` is silently ignored, as for `plugins`. An older fullsend binary ignores the field too, so a harness that uses it must state the fullsend release it needs.
 

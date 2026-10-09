@@ -3,14 +3,21 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // checkWorkflowRuntime refuses a harness workflow: field under a runtime
@@ -42,16 +49,91 @@ func resolveHarnessWorkflow(ctx context.Context, h *harness.Harness, cfg config.
 	return resolve.ResolveWorkflowDefinition(ctx, h, entries, absFullsendDir, opts)
 }
 
-// describeWorkflow renders the run plan's Workflow line:
-// <definition> (<commit>, sha256:<hash>) delivered as plugin <namespace>;
-// workflow <name>. It names what is uploaded, not a command: this
-// release delivers the definition and does not start the workflow.
+// describeWorkflow renders the run plan's Workflow line: the definition,
+// its pin and the command the runner starts,
+// <definition> (<commit>, sha256:<hash>) → /<namespace>:<name>[ <args>].
 func describeWorkflow(rw *resolve.ResolvedWorkflow) string {
 	pin := fmt.Sprintf("%s, sha256:%s", shortHash(rw.Commit), shortHash(rw.TreeHash))
 	if rw.Local {
 		pin = fmt.Sprintf("local %s, sha256:%s", rw.Source, shortHash(rw.TreeHash))
 	}
-	return fmt.Sprintf("%s (%s) delivered as plugin %s; workflow %s", rw.Definition, pin, rw.PluginName, rw.Name)
+	return fmt.Sprintf("%s (%s) → %s", rw.Definition, pin, rw.Command())
+}
+
+// workflowToolName is the Claude Code tool that starts a workflow.
+const workflowToolName = "Workflow"
+
+// checkWorkflowAgentTools refuses an agent whose frontmatter tools: list
+// leaves out Workflow: its main loop could not start the command the
+// runner hands it (ADR 0130 rule 5). An agent without a tools: list
+// inherits every tool and passes.
+func checkWorkflowAgentTools(h *harness.Harness, agentName string, rw *resolve.ResolvedWorkflow) error {
+	if rw == nil {
+		return nil
+	}
+	access, err := agentruntime.AgentDefinitionTools(h.Agent)
+	if err != nil {
+		return fmt.Errorf("workflow: cannot read the tools of agent %s (%s): %w; fix the agent file", agentName, h.Agent, err)
+	}
+	if slices.Contains(access.Disallowed, workflowToolName) {
+		return fmt.Errorf("workflow: agent %s lists Workflow in disallowedTools:, so it cannot start /%s:%s; remove Workflow from its disallowedTools:", agentName, rw.PluginName, rw.Name)
+	}
+	if access.Listed && !slices.Contains(access.Tools, workflowToolName) {
+		return fmt.Errorf("workflow: agent %s lists tools: without Workflow, so it cannot start /%s:%s; add Workflow to its tools:", agentName, rw.PluginName, rw.Name)
+	}
+	return nil
+}
+
+// workflowFeedbackNote is printed once per run when a validation-loop
+// retry of a workflow harness has feedback it does not pass on.
+const workflowFeedbackNote = "The workflow restarts from its own state; validation feedback is not passed to it"
+
+// iterationPrompt chooses the agent prompt of one iteration. A workflow
+// harness starts rw.Command() on every iteration; a retry with
+// feedback_mode: append feedback leaves the command as it is, and note
+// reports that once per run (noted carries that across iterations). Other
+// harnesses get the default prompt, or the feedback prompt on such a
+// retry (inject is true then).
+func iterationPrompt(rw *resolve.ResolvedWorkflow, iteration int, feedbackEnabled bool, feedback string, noted *bool) (prompt string, sanitized int, inject, note bool) {
+	retryFeedback := iteration > 1 && feedbackEnabled && feedback != ""
+	if rw != nil {
+		if retryFeedback && !*noted {
+			*noted = true
+			note = true
+		}
+		return rw.Command(), 0, false, note
+	}
+	if retryFeedback {
+		prompt, sanitized = buildFeedbackPrompt(feedback)
+		return prompt, sanitized, true, false
+	}
+	return "", 0, false, false
+}
+
+// workflowLaunch is the metrics.json record of the workflow a run started:
+// written for every runtime, so a dummy run, which runs no model, still
+// records what the runner launched (ADR 0130 rule 4).
+type workflowLaunch struct {
+	Definition string `json:"definition"`
+	// Source is the workflows: source without its #sha256= fragment, or
+	// the local path.
+	Source    string `json:"source"`
+	PinSHA256 string `json:"pin_sha256"`
+	Command   string `json:"command"`
+}
+
+func newWorkflowLaunch(rw *resolve.ResolvedWorkflow) *workflowLaunch {
+	if rw == nil {
+		return nil
+	}
+	return &workflowLaunch{Definition: rw.Definition, Source: rw.Source, PinSHA256: rw.TreeHash, Command: rw.Command()}
+}
+
+// workflowSpanAttr is the agent span's fullsend.workflow attribute: the
+// /<namespace>:<name> the runner starts, without args, which stay out of
+// traces.
+func workflowSpanAttr(rw *resolve.ResolvedWorkflow) attribute.KeyValue {
+	return boundedStringAttr("fullsend.workflow", "/"+rw.PluginName+":"+rw.Name)
 }
 
 func shortHash(s string) string {
@@ -220,4 +302,34 @@ func warnWorkflowLockDrift(printer *ui.Printer, absFullsendDir, fullsendDir, age
 	if drift := workflowPinDrift(rw.Definition, current, entry); drift != "" {
 		printer.StepWarn(fmt.Sprintf("Workflow definition differs from lock.yaml: %s; this run uses the config.yaml pin. Run 'fullsend lock %s%s' to update.", drift, agentName, fullsendDirArg(fullsendDir)))
 	}
+}
+
+// expandWorkflowArgs expands ${VAR} references in workflow.args with the
+// runner's harness expander. Args reach the model prompt, the run plan,
+// metrics.json and traces, so it refuses, before expanding, a reference
+// to a credential-shaped or runner-only variable, and, after expanding, a
+// result that looks like a credential (the value is not printed). It also
+// refuses a result that is no longer a single line: an expanded value
+// must not add a second line to the slash command the runner starts.
+func expandWorkflowArgs(args string, expand func(string) string) (string, error) {
+	if err := harness.CheckWorkflowArgsVariables(args, runnerOnlyCredential); err != nil {
+		return "", err
+	}
+	out := os.Expand(args, expand)
+	if strings.ContainsAny(out, "\x00\r\n") {
+		return "", fmt.Errorf("workflow.args %q expands to more than one line; the variables it names must not hold NUL, carriage return or newline characters", args)
+	}
+	if res := security.NewSecretRedactor().Scan(out); !res.Safe {
+		return "", fmt.Errorf("workflow.args expands to a value that looks like a credential; pass work-item identifiers only")
+	}
+	return out, nil
+}
+
+// runnerOnlyCredential is harnessExpansionDenied in the shape
+// harness.CheckWorkflowArgsVariables takes.
+func runnerOnlyCredential(name string) (string, bool) {
+	if harnessExpansionDenied(name) {
+		return "a runner-only credential no harness may expand", true
+	}
+	return "", false
 }

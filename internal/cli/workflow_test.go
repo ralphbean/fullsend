@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -69,17 +70,17 @@ func TestDescribeWorkflow(t *testing.T) {
 		{
 			name: "remote with args",
 			rw:   resolve.ResolvedWorkflow{Definition: "sample-pipeline", Name: "probe", Args: "--issue 7", Commit: cliWorkflowSHA, TreeHash: hash, PluginName: "wfplug"},
-			want: "sample-pipeline (0123456789ab, sha256:abcdef012345) delivered as plugin wfplug; workflow probe",
+			want: "sample-pipeline (0123456789ab, sha256:abcdef012345) → /wfplug:probe --issue 7",
 		},
 		{
 			name: "local without args",
 			rw:   resolve.ResolvedWorkflow{Definition: "self", Name: "probe", Local: true, Source: ".", TreeHash: hash, PluginName: "wfplug"},
-			want: "self (local ., sha256:abcdef012345) delivered as plugin wfplug; workflow probe",
+			want: "self (local ., sha256:abcdef012345) → /wfplug:probe",
 		},
 		{
 			name: "short values are kept",
 			rw:   resolve.ResolvedWorkflow{Definition: "d", Name: "n", Commit: "abc", TreeHash: "def", PluginName: "p"},
-			want: "d (abc, sha256:def) delivered as plugin p; workflow n",
+			want: "d (abc, sha256:def) → /p:n",
 		},
 	}
 	for _, tt := range tests {
@@ -119,7 +120,7 @@ func TestResolveHarnessWorkflow(t *testing.T) {
 		rw, dep, err := resolveHarnessWorkflow(context.Background(), h, cfg, fullsendDir, resolve.ResolveOpts{WorkspaceRoot: fullsendDir})
 		require.NoError(t, err)
 		assert.Nil(t, dep)
-		assert.Equal(t, "self (local def, sha256:"+rw.TreeHash[:12]+") delivered as plugin wfplug; workflow probe", describeWorkflow(rw))
+		assert.Equal(t, "self (local def, sha256:"+rw.TreeHash[:12]+") → /wfplug:probe", describeWorkflow(rw))
 	})
 }
 
@@ -219,9 +220,172 @@ func TestRunAgent_WorkflowPlanLine(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
 	assert.Contains(t, buf.String(), "sample-pipeline (local wfdef, sha256:")
-	assert.Contains(t, buf.String(), ") delivered as plugin wfplug; workflow probe")
-	assert.NotContains(t, buf.String(), "/wfplug:probe", "the plan does not promise a command the runner does not start")
+	assert.Contains(t, buf.String(), ") → /wfplug:probe --issue 7")
+	assert.NotContains(t, buf.String(), "delivered as plugin")
 	assert.Contains(t, buf.String(), "sample-pipeline (claude)", "the definition is delivered as a Claude plugin")
+}
+
+// The tools check runs at plan time, before the sandbox: an agent whose
+// tools: list leaves out Workflow cannot start the command.
+func TestRunAgent_WorkflowAgentToolsWithoutWorkflow(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newWorkflowRunDir(t, "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "code.md"),
+		[]byte("---\nname: code\ntools: Read, Bash(gh)\n---\nYou are a coding agent.\n"), 0o644))
+
+	var buf bytes.Buffer
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50},
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Equal(t, "workflow: agent code lists tools: without Workflow, so it cannot start /wfplug:probe; add Workflow to its tools:", err.Error())
+	assert.NotContains(t, err.Error(), "creating sandbox")
+}
+
+func TestCheckWorkflowAgentTools(t *testing.T) {
+	dir := t.TempDir()
+	agent := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		return p
+	}
+	rw := &resolve.ResolvedWorkflow{Definition: "sample-pipeline", Name: "probe", Args: "--issue 7", PluginName: "wfplug"}
+	tests := []struct {
+		name    string
+		agent   string
+		rw      *resolve.ResolvedWorkflow
+		wantErr string
+	}{
+		{name: "tools: names Workflow", agent: agent("with.md", "---\nname: a\ntools: Read, Workflow\n---\nbody"), rw: rw},
+		{name: "tools: names Workflow with arguments", agent: agent("args.md", "---\nname: a\ntools:\n  - Workflow(wfplug:probe)\n---\nbody"), rw: rw},
+		{name: "no tools: inherits every tool", agent: agent("none.md", "---\nname: a\n---\nbody"), rw: rw},
+		{name: "no workflow", agent: agent("no-wf.md", "---\nname: a\ntools: Read\n---\nbody")},
+		{
+			name: "tools: without Workflow", agent: agent("without.md", "---\nname: a\ntools: Read, Bash(gh,jq)\n---\nbody"), rw: rw,
+			wantErr: "workflow: agent code lists tools: without Workflow, so it cannot start /wfplug:probe; add Workflow to its tools:",
+		},
+		{
+			name: "empty tools:", agent: agent("empty.md", "---\nname: a\ntools: []\n---\nbody"), rw: rw,
+			wantErr: "lists tools: without Workflow",
+		},
+		{
+			name: "disallowedTools: names Workflow", agent: agent("disallowed.md", "---\nname: a\ndisallowedTools: Workflow\n---\nbody"), rw: rw,
+			wantErr: "workflow: agent code lists Workflow in disallowedTools:, so it cannot start /wfplug:probe; remove Workflow from its disallowedTools:",
+		},
+		{
+			name: "disallowedTools: wins over tools:", agent: agent("both.md", "---\nname: a\ntools: Read, Workflow\ndisallowedTools: [Workflow]\n---\nbody"), rw: rw,
+			wantErr: "lists Workflow in disallowedTools:",
+		},
+		{
+			name: "broken tools: entry", agent: agent("broken.md", "---\nname: a\ntools: [Read, 42]\n---\nbody"), rw: rw,
+			wantErr: "workflow: cannot read the tools of agent code (",
+		},
+		{
+			name: "missing agent file", agent: filepath.Join(dir, "missing.md"), rw: rw,
+			wantErr: "; fix the agent file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkWorkflowAgentTools(&harness.Harness{Agent: tt.agent}, "code", tt.rw)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestIterationPrompt(t *testing.T) {
+	rw := &resolve.ResolvedWorkflow{Definition: "sample-pipeline", Name: "probe", Args: "--issue 7", PluginName: "wfplug"}
+
+	t.Run("workflow command on every iteration, feedback noted once", func(t *testing.T) {
+		var noted bool
+		prompt, sanitized, inject, note := iterationPrompt(rw, 1, true, "", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.Zero(t, sanitized)
+		assert.False(t, inject)
+		assert.False(t, note)
+
+		prompt, _, inject, note = iterationPrompt(rw, 2, true, "FAIL: missing field", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt, "a retry starts the same command, without the feedback")
+		assert.False(t, inject)
+		assert.True(t, note, "the first retry with feedback prints the note")
+
+		prompt, _, _, note = iterationPrompt(rw, 3, true, "FAIL: still missing", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.False(t, note, "the note prints once per run")
+	})
+
+	t.Run("workflow retry without feedback_mode append prints no note", func(t *testing.T) {
+		var noted bool
+		prompt, _, inject, note := iterationPrompt(rw, 2, false, "FAIL", &noted)
+		assert.Equal(t, "/wfplug:probe --issue 7", prompt)
+		assert.False(t, inject)
+		assert.False(t, note)
+	})
+
+	t.Run("without a workflow the feedback prompt is unchanged", func(t *testing.T) {
+		var noted bool
+		prompt, _, inject, note := iterationPrompt(nil, 1, true, "", &noted)
+		assert.Empty(t, prompt, "empty: the runtime uses its default prompt")
+		assert.False(t, inject)
+		assert.False(t, note)
+
+		prompt, _, inject, _ = iterationPrompt(nil, 2, true, "FAIL: missing field", &noted)
+		want, _ := buildFeedbackPrompt("FAIL: missing field")
+		assert.Equal(t, want, prompt)
+		assert.True(t, inject)
+		assert.False(t, noted)
+	})
+}
+
+func TestWorkflowLaunchInMetricsJSON(t *testing.T) {
+	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	tests := []struct {
+		name string
+		rw   *resolve.ResolvedWorkflow
+		want string
+	}{
+		{
+			name: "remote",
+			rw: &resolve.ResolvedWorkflow{
+				Definition: "sample-pipeline", Name: "probe", Args: "--issue 7", PluginName: "wfplug",
+				Source: "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA, Commit: cliWorkflowSHA, TreeHash: hash,
+			},
+			want: `{"definition":"sample-pipeline","source":"https://github.com/example-org/sample-pipeline/tree/` + cliWorkflowSHA +
+				`","pin_sha256":"` + hash + `","command":"/wfplug:probe --issue 7"}`,
+		},
+		{
+			name: "local",
+			rw:   &resolve.ResolvedWorkflow{Definition: "self", Name: "probe", PluginName: "wfplug", Local: true, Source: "wfdef", TreeHash: hash},
+			want: `{"definition":"self","source":"wfdef","pin_sha256":"` + hash + `","command":"/wfplug:probe"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, writeMetricsJSON(dir, aggregateMetrics{Runtime: "dummy", Workflow: newWorkflowLaunch(tt.rw)}))
+			data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+			require.NoError(t, err)
+			var got struct {
+				Runtime  string          `json:"runtime"`
+				Workflow json.RawMessage `json:"workflow"`
+			}
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, "dummy", got.Runtime)
+			assert.JSONEq(t, tt.want, string(got.Workflow))
+		})
+	}
+
+	t.Run("absent without a workflow", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, writeMetricsJSON(dir, aggregateMetrics{Workflow: newWorkflowLaunch(nil)}))
+		data, err := os.ReadFile(filepath.Join(dir, metricsFile))
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), `"workflow"`)
+	})
 }
 
 func TestRunAgent_WorkflowRefusedUnderPi(t *testing.T) {
@@ -772,4 +936,81 @@ func TestRunAgent_InvalidWorkflowsEntryRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), `workflows[0] "bad name": name may contain only letters, digits, _ and -`)
 	assert.NotContains(t, err.Error(), "creating sandbox")
 	assert.NotContains(t, buf.String(), "Creating sandbox")
+}
+
+func TestExpandWorkflowArgs(t *testing.T) {
+	env := map[string]string{"ISSUE_NUMBER": "42", "EVIL": "1\n/other:cmd"}
+	expand := func(k string) string { return env[k] }
+
+	got, err := expandWorkflowArgs("issue ${ISSUE_NUMBER}", expand)
+	require.NoError(t, err)
+	assert.Equal(t, "issue 42", got)
+
+	got, err = expandWorkflowArgs("issue ${UNSET}", expand)
+	require.NoError(t, err)
+	assert.Equal(t, "issue ", got, "an unset variable expands empty, as in env:")
+
+	_, err = expandWorkflowArgs("issue ${EVIL}", expand)
+	require.Error(t, err)
+	assert.Equal(t, `workflow.args "issue ${EVIL}" expands to more than one line; the variables it names must not hold NUL, carriage return or newline characters`, err.Error())
+}
+
+// Args reach the model prompt, the plan, metrics.json and traces, so a
+// credential-shaped or runner-only reference is refused before anything
+// is expanded, and the expander is never asked for its value.
+func TestExpandWorkflowArgs_CredentialReferenceRefused(t *testing.T) {
+	expand := func(k string) string {
+		t.Errorf("expander called for %s", k)
+		return ""
+	}
+	for _, name := range []string{"GH_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS", "MY_API_KEY", "DB_PASSWORD", "X_SECRET_Y", "ACTIONS_ID_TOKEN_REQUEST_URL", "FULLSEND_GCP_OIDC_URL", "GH_WORKFLOW_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER} ${"+name+"}", expand)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "workflow.args references ${"+name+"}, which names a credential (")
+			assert.Contains(t, err.Error(), "); pass work-item identifiers such as ${ISSUE_NUMBER} instead")
+		})
+	}
+	_, err := expandWorkflowArgs("issue ${FULLSEND_GCP_OIDC_URL}", expand)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "(a runner-only credential no harness may expand)")
+}
+
+// A value that looks like a credential in an allowed variable is refused
+// after expansion, without printing it.
+func TestExpandWorkflowArgs_CredentialValueRefused(t *testing.T) {
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	expand := func(k string) string {
+		if k == "ISSUE_NUMBER" {
+			return secret
+		}
+		return ""
+	}
+	_, err := expandWorkflowArgs("issue ${ISSUE_NUMBER}", expand)
+	require.Error(t, err)
+	assert.Equal(t, "workflow.args expands to a value that looks like a credential; pass work-item identifiers only", err.Error())
+	assert.NotContains(t, err.Error(), secret)
+}
+
+// A credential reference fails the run at plan time, before the sandbox.
+func TestRunAgent_WorkflowArgsCredentialRefused(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("ISSUE_NUMBER", "ghp_"+"abcdefghijklmnopqrstuvwxyz0123456789")
+	dir := newWorkflowRunDir(t, "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\nworkflow:\n  definition: sample-pipeline\n  name: probe\n  args: issue ${ISSUE_NUMBER}\n"), 0o644))
+
+	var buf bytes.Buffer
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50},
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflow.args expands to a value that looks like a credential")
+	assert.NotContains(t, buf.String(), "Creating sandbox")
+	assert.NotContains(t, buf.String()+err.Error(), "abcdefghijklmnopqrstuvwxyz0123456789")
+}
+
+func TestWorkflowSpanAttr(t *testing.T) {
+	attr := workflowSpanAttr(&resolve.ResolvedWorkflow{PluginName: "wfplug", Name: "probe", Args: "issue 7"})
+	assert.Equal(t, "fullsend.workflow", string(attr.Key))
+	assert.Equal(t, "/wfplug:probe", attr.Value.AsString(), "args stay out of traces")
 }
