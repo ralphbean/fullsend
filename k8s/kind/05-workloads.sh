@@ -38,5 +38,6 @@ k -n fullsend-control delete job migrate --ignore-not-found --wait=true >/dev/nu
 k apply -k "$LOCAL_DIR/migration" >/dev/null
 k -n fullsend-control wait --for=condition=complete job/migrate --timeout=120s >/dev/null || fail 'Migration failed'
 k apply -k "$LOCAL_DIR/workload" >/dev/null
+k -n fullsend-runner delete rolebinding/stub-job-launcher role/stub-job-launcher --ignore-not-found --wait=true >/dev/null
 k -n fullsend-control patch cronjob fixture-poller fixture-dispatcher --type merge -p '{"spec":{"suspend":false}}' >/dev/null
 status '✅' 'Poller and dispatcher ready'

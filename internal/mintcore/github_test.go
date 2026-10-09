@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -864,6 +865,50 @@ func TestCreateInstallationToken_CustomRole(t *testing.T) {
 	token, _, _, err := CreateInstallationToken(t.Context(), mockGH.URL, "fake-jwt", 42, "test-org", "scanner", LevelRead, []string{"my-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_custom_token", token)
+}
+
+func TestCreateInstallationTokenForRepositoryIDs(t *testing.T) {
+	var tokenRequest map[string]any
+	SetMintHTTPForTest(t, func(req *http.Request) (*http.Response, error) {
+		assert.Equal(t, http.MethodPost, req.Method)
+		assert.Equal(t, "/app/installations/42/access_tokens", req.URL.Path)
+		assert.Equal(t, "Bearer app-jwt", req.Header.Get("Authorization"))
+		assert.NoError(t, json.NewDecoder(req.Body).Decode(&tokenRequest))
+		return jsonResponse(http.StatusCreated, `{"token":"ghs_scoped","expires_at":"2099-01-01T00:00:00Z","permissions":{"contents":"read"},"repositories":[{"id":123456,"full_name":"acme/example"}]}`), nil
+	})
+
+	token, expiresAt, granted, err := CreateInstallationTokenForRepositoryIDs(
+		t.Context(), "https://api.github.test", "app-jwt", 42, "coder", LevelRead, []int64{123456},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_scoped", token)
+	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
+	assert.Equal(t, []any{float64(123456)}, tokenRequest["repository_ids"])
+	assert.NotContains(t, tokenRequest, "repositories")
+	assert.Equal(t, []int64{123456}, granted.RepositoryIDs)
+	assert.Equal(t, int64(42), granted.InstallationID)
+}
+
+func TestCreateInstallationTokenForRepositoryIDsRejectsInvalidScope(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		installationID int64
+		repositoryIDs  []int64
+	}{
+		{name: "invalid installation", installationID: 0, repositoryIDs: []int64{123456}},
+		{name: "empty repository scope", installationID: 42},
+		{name: "nonpositive repository ID", installationID: 42, repositoryIDs: []int64{0}},
+		{name: "duplicate repository ID", installationID: 42, repositoryIDs: []int64{123456, 123456}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, err := CreateInstallationTokenForRepositoryIDs(t.Context(), "https://api.github.test", "app-jwt", tc.installationID, "coder", LevelRead, tc.repositoryIDs)
+			require.Error(t, err)
+		})
+	}
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }
 
 func TestFindOrgInstallation_OrgMismatch(t *testing.T) {

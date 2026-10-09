@@ -3,10 +3,14 @@ package mintclient
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -85,6 +89,257 @@ func TestMintToken_HappyPath(t *testing.T) {
 	if result.ExpiresAt != "2026-06-11T23:30:00Z" {
 		t.Errorf("expires_at = %q, want %q", result.ExpiresAt, "2026-06-11T23:30:00Z")
 	}
+}
+
+func TestMintToken_KubernetesProjectionIsRereadForRetry(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("first.header.signature\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var authHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/kubernetes/token" {
+			t.Errorf("path = %q, want Kubernetes identity endpoint", r.URL.Path)
+		}
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		var body kubernetesMintRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding request: %v", err)
+		}
+		if body.RepositoryID != 123456 || body.Role != "coder" || body.Level != "write" {
+			t.Errorf("request scope = %+v", body)
+		}
+		if len(authHeaders) == 1 {
+			if err := os.WriteFile(tokenFile, []byte("rotated.header.signature\n"), 0600); err != nil {
+				t.Errorf("rotating projected token: %v", err)
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(MintResult{Token: "ghs_kubernetes", ExpiresAt: "2099-01-01T00:00:00Z"})
+	}))
+	defer server.Close()
+
+	result, err := MintToken(context.Background(), MintRequest{
+		MintURL: server.URL, Role: "coder", Level: "write", RepositoryID: 123456, KubernetesTokenFile: tokenFile,
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	if result.Token != "ghs_kubernetes" {
+		t.Fatalf("token = %q, want ghs_kubernetes", result.Token)
+	}
+	if len(authHeaders) != 2 || authHeaders[0] != "Bearer first.header.signature" || authHeaders[1] != "Bearer rotated.header.signature" {
+		t.Fatalf("Authorization headers = %v, want the initial and rotated projections", authHeaders)
+	}
+}
+
+func TestMintToken_KubernetesRefreshDenialFailsClosed(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("projected.header.signature"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"refresh denied"}`))
+	}))
+	defer server.Close()
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: server.URL, Role: "coder", Level: "write", RepositoryID: 123456, KubernetesTokenFile: tokenFile,
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("MintToken() error = %v, want 403 denial", err)
+	}
+	if calls != 1 {
+		t.Fatalf("mint calls = %d, want one non-retryable authorization denial", calls)
+	}
+}
+
+func TestValidMintURL(t *testing.T) {
+	tests := []struct {
+		name               string
+		value              string
+		kubernetesIdentity bool
+		want               bool
+	}{
+		{name: "public HTTPS", value: "https://mint.example/v1/token", want: true},
+		{name: "localhost test server", value: "http://localhost:8080", want: true},
+		{name: "Kubernetes service over TLS", value: "https://fullsend-mint.fullsend-mint.svc", kubernetesIdentity: true, want: true},
+		{name: "Kubernetes service over HTTP", value: "http://fullsend-mint.fullsend-mint.svc:8080", kubernetesIdentity: true, want: false},
+		{name: "external HTTP with projected identity", value: "http://mint.example", kubernetesIdentity: true, want: false},
+		{name: "URL credentials", value: "https://user:pass@mint.example", want: false},
+		{name: "unsupported scheme", value: "ftp://mint.example", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := url.Parse(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := validMintURL(parsed, tt.kubernetesIdentity); got != tt.want {
+				t.Fatalf("validMintURL() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKubernetesMintHTTPClientTrustsConfiguredCA(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer server.Close()
+	caPath := filepath.Join(t.TempDir(), "mint-ca.crt")
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(caPath, caPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBERNETES_MINT_CA_FILE", caPath)
+	client, err := kubernetesMintHTTPClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("mint client did not trust configured CA: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", response.StatusCode)
+	}
+}
+
+func TestKubernetesMintHTTPClientRejectsInvalidCAFiles(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		t.Setenv("KUBERNETES_MINT_CA_FILE", filepath.Join(t.TempDir(), "missing.pem"))
+		if _, err := kubernetesMintHTTPClient(); err == nil || !strings.Contains(err.Error(), "reading Kubernetes mint CA") {
+			t.Fatalf("error = %v, want CA read failure", err)
+		}
+	})
+	t.Run("no certificates", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "invalid.pem")
+		if err := os.WriteFile(path, []byte("not a certificate"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("KUBERNETES_MINT_CA_FILE", path)
+		if _, err := kubernetesMintHTTPClient(); err == nil || !strings.Contains(err.Error(), "contains no certificates") {
+			t.Fatalf("error = %v, want invalid CA failure", err)
+		}
+	})
+}
+
+type mintHTTPDoerFunc func(*http.Request) (*http.Response, error)
+
+func (f mintHTTPDoerFunc) Do(request *http.Request) (*http.Response, error) { return f(request) }
+
+type mintErrorReader struct{}
+
+func (mintErrorReader) Read([]byte) (int, error) { return 0, fmt.Errorf("read failed") }
+func (mintErrorReader) Close() error             { return nil }
+
+func TestCallKubernetesMintRejectsInvalidInputsAndResponses(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("header.payload.signature"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("repository ID missing", func(t *testing.T) {
+		t.Setenv("FULLSEND_REPOSITORY_ID", "")
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write"}, tokenFile)
+		if err == nil || !strings.Contains(err.Error(), "FULLSEND_REPOSITORY_ID") {
+			t.Fatalf("error = %v, want missing repository ID", err)
+		}
+	})
+	t.Run("repository ID invalid", func(t *testing.T) {
+		t.Setenv("FULLSEND_REPOSITORY_ID", "bad")
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write"}, tokenFile)
+		if err == nil {
+			t.Fatal("invalid repository ID was accepted")
+		}
+	})
+	t.Run("repository ID nonpositive", func(t *testing.T) {
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write", RepositoryID: -1}, tokenFile)
+		if err == nil || !strings.Contains(err.Error(), "positive") {
+			t.Fatalf("error = %v, want nonpositive repository ID", err)
+		}
+	})
+	t.Run("missing role", func(t *testing.T) {
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Level: "write", RepositoryID: 1}, tokenFile)
+		if err == nil || !strings.Contains(err.Error(), "role is required") {
+			t.Fatalf("error = %v, want missing role", err)
+		}
+	})
+	t.Run("missing level", func(t *testing.T) {
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", RepositoryID: 1}, tokenFile)
+		if err == nil || !strings.Contains(err.Error(), "level is required") {
+			t.Fatalf("error = %v, want missing level", err)
+		}
+	})
+	t.Run("invalid URL path", func(t *testing.T) {
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example/%zz", Role: "coder", Level: "write", RepositoryID: 1}, tokenFile)
+		if err == nil || !strings.Contains(err.Error(), "constructing Kubernetes mint URL") {
+			t.Fatalf("error = %v, want invalid URL path", err)
+		}
+	})
+	t.Run("missing projected file", func(t *testing.T) {
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write", RepositoryID: 1}, filepath.Join(t.TempDir(), "missing"))
+		if err == nil || !strings.Contains(err.Error(), "reading projected Kubernetes mint token") {
+			t.Fatalf("error = %v, want projected token read failure", err)
+		}
+	})
+	t.Run("malformed projected JWT", func(t *testing.T) {
+		badFile := filepath.Join(t.TempDir(), "token")
+		if err := os.WriteFile(badFile, []byte("not-a-jwt"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := callKubernetesMint(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write", RepositoryID: 1}, badFile)
+		if err == nil || !strings.Contains(err.Error(), "not a compact JWT") {
+			t.Fatalf("error = %v, want invalid projected JWT", err)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		code int
+		body string
+	}{
+		{name: "server failure", code: http.StatusServiceUnavailable, body: `{"error":"unavailable"}`},
+		{name: "invalid JSON response", code: http.StatusOK, body: `{`},
+		{name: "empty token response", code: http.StatusOK, body: `{"token":""}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls++
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			_, err := MintToken(context.Background(), MintRequest{MintURL: server.URL, Role: "coder", Level: "write", RepositoryID: 1, KubernetesTokenFile: tokenFile})
+			if err == nil {
+				t.Fatal("invalid mint response was accepted")
+			}
+			if tc.code >= 500 && calls != 5 {
+				t.Fatalf("retryable server response calls = %d, want 5", calls)
+			}
+			if tc.code < 500 && calls != 1 {
+				t.Fatalf("non-retryable response calls = %d, want 1", calls)
+			}
+		})
+	}
+	t.Run("response body read failure", func(t *testing.T) {
+		oldClient := httpClient
+		defer func() { httpClient = oldClient }()
+		httpClient = mintHTTPDoerFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: mintErrorReader{}}, nil
+		})
+		_, err := MintToken(context.Background(), MintRequest{MintURL: "https://mint.example", Role: "coder", Level: "write", RepositoryID: 1, KubernetesTokenFile: tokenFile})
+		if err == nil || !strings.Contains(err.Error(), "reading Kubernetes mint response") {
+			t.Fatalf("error = %v, want response read failure", err)
+		}
+	})
 }
 
 func TestMintToken_CrossOrgTarget(t *testing.T) {

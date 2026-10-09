@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,66 @@ func TestCheckRequired(t *testing.T) {
 			t.Fatalf("expected 2 missing, got %v", missing)
 		}
 	})
+}
+
+func TestTLSFilesFromEnvironment(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		t.Setenv("TLS_CERT_FILE", "")
+		t.Setenv("TLS_KEY_FILE", "")
+		cert, key, err := tlsFilesFromEnvironment()
+		if err != nil || cert != "" || key != "" {
+			t.Fatalf("tlsFilesFromEnvironment() = %q, %q, %v", cert, key, err)
+		}
+	})
+	t.Run("enabled", func(t *testing.T) {
+		t.Setenv("TLS_CERT_FILE", "/cert/tls.crt")
+		t.Setenv("TLS_KEY_FILE", "/cert/tls.key")
+		cert, key, err := tlsFilesFromEnvironment()
+		if err != nil || cert != "/cert/tls.crt" || key != "/cert/tls.key" {
+			t.Fatalf("tlsFilesFromEnvironment() = %q, %q, %v", cert, key, err)
+		}
+	})
+	t.Run("incomplete", func(t *testing.T) {
+		t.Setenv("TLS_CERT_FILE", "/cert/tls.crt")
+		t.Setenv("TLS_KEY_FILE", "")
+		if _, _, err := tlsFilesFromEnvironment(); err == nil {
+			t.Fatal("expected incomplete TLS configuration to fail")
+		}
+	})
+}
+
+func TestBuildHandlerKubernetesIdentityUsesDedicatedRoute(t *testing.T) {
+	_, jwksPath := writeTestKubernetesJWKS(t)
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	policy := kubernetesMintConfig{TrustedIssuers: []kubernetesIssuerPolicy{{
+		Issuer: "https://kind.fullsend.test", Audience: kubernetesMintAudience, JWKSFile: jwksPath,
+		Namespaces: map[string]kubernetesNamespacePolicy{"fullsend-runner": {Tenant: "owner/repo", Roles: map[string]kubernetesRolePolicy{
+			"coder": {InstallationID: 123, RepositoryIDs: []int64{456}, AllowedLevels: []string{"write"}},
+		}}},
+	}}}
+	policyData, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, policyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pemDir := setupTestPEMDir(t)
+	t.Setenv("ROLE_APP_IDS", `{"coder":"789"}`)
+	t.Setenv("PEM_DIR", pemDir)
+	t.Setenv("KUBERNETES_MINT_CONFIG_FILE", policyPath)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "")
+	handler, err := buildHandler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]int{kubernetesMintPath: http.StatusUnauthorized, "/": http.StatusNotFound} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`)))
+		if response.Code != want {
+			t.Errorf("path %q status = %d, want %d", path, response.Code, want)
+		}
+	}
 }
 
 func TestSplitCSV_ViaExported(t *testing.T) {

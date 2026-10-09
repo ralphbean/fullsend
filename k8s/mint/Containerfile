@@ -1,0 +1,13 @@
+ARG GO_BUILDER_IMAGE=registry.access.redhat.com/ubi10/go-toolset@sha256:290ba654458e9a269b1509d10e6ebbd3c2b2456570e73e73201adb3ee54fb244
+ARG RUNTIME_IMAGE=registry.access.redhat.com/ubi10/ubi-minimal:10.2-1790075626
+FROM ${GO_BUILDER_IMAGE} AS build
+WORKDIR /src
+COPY . .
+WORKDIR /src/cmd/mint
+RUN go mod download && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /tmp/fullsend-mint .
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=build /tmp/fullsend-mint /usr/local/bin/fullsend-mint
+USER 10001:10001
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/fullsend-mint"]

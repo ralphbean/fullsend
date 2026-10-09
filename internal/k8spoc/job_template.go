@@ -4,13 +4,31 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
+
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
 var jobNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 var imageDigestPattern = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 var localRunnerTagPattern = regexp.MustCompile(`^localhost/fullsend-poc-runner:[0-9a-f]{12}-[0-9a-f]{16}$`)
 var attemptJobPattern = regexp.MustCompile(`^fs-poc-[1-9][0-9]*-[1-9][0-9]*$`)
+
+const (
+	gatewayDemoRole             = "triage"
+	kubernetesMintTokenPath     = "/var/run/secrets/fullsend/mint/token"
+	kubernetesMintCAPath        = "/var/run/secrets/fullsend/mint/ca.crt"
+	kubernetesMintAudience      = "fullsend-k8s-mint"
+	kubernetesMintServiceURL    = "https://fullsend-mint.fullsend-mint.svc"
+	kubernetesMintServiceCAName = "fullsend-mint-ca"
+)
+
+type mintJobIdentity struct {
+	repositoryID int64
+	role         string
+	mintURL      string
+}
 
 // attemptSandboxName is derived only from the durable attempt Job identity.
 // The same derivation is used by the runner and by its independent cleaner.
@@ -91,7 +109,7 @@ func GatewayDemoJob(name, runnerImage string) ([]byte, error) {
 	if !ok || len(names) != 1 {
 		return nil, fmt.Errorf("demo Job name must use fs-demo-<eight lowercase hex digits>")
 	}
-	return gatewayDemoJob(name, names[0], runnerImage, 0)
+	return gatewayDemoJob(name, names[0], runnerImage, 0, nil)
 }
 
 // GatewayAttemptJob dispatches the fixture's gateway-demo harness with the
@@ -101,10 +119,31 @@ func GatewayAttemptJob(name, runnerImage string, attemptID int64) ([]byte, error
 	if err != nil || attemptID < 1 {
 		return nil, fmt.Errorf("valid durable attempt identity is required")
 	}
-	return gatewayDemoJob(name, sandboxName, runnerImage, attemptID)
+	return gatewayDemoJob(name, sandboxName, runnerImage, attemptID, nil)
 }
 
-func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64) ([]byte, error) {
+// GatewayAttemptMintJob renders the dispatcher demo Job with a repository and
+// role-bound Kubernetes identity for the private mint.
+func GatewayAttemptMintJob(name, runnerImage string, attemptID, repositoryID int64, role, mintURL string) ([]byte, error) {
+	sandboxName, err := attemptSandboxName(name)
+	if err != nil || attemptID < 1 || repositoryID < 1 {
+		return nil, fmt.Errorf("valid durable attempt and repository identities are required")
+	}
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return nil, fmt.Errorf("invalid mint role: %w", err)
+	}
+	parsed, err := url.Parse(mintURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("mint URL must be an HTTPS URL without credentials, query, or fragment")
+	}
+	return gatewayDemoJob(name, sandboxName, runnerImage, attemptID, &mintJobIdentity{
+		repositoryID: repositoryID,
+		role:         role,
+		mintURL:      mintURL,
+	})
+}
+
+func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64, identity *mintJobIdentity) ([]byte, error) {
 	jobBytes, err := gatewayRunnerJob(name, runnerImage, "demo", []string{
 		"/usr/local/bin/fullsend", "k8s-poc", "gateway-demo",
 		"--job-name", name, "--sandbox-name", sandboxName,
@@ -137,7 +176,47 @@ func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64) ([]b
 	pod["initContainers"] = append(initContainers, init)
 	container := pod["containers"].([]any)[0].(map[string]any)
 	container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{"name": "demo", "mountPath": "/demo"})
+	if identity != nil {
+		if err := applyMintJobIdentity(pod, container, *identity); err != nil {
+			return nil, err
+		}
+	}
 	return json.MarshalIndent(job, "", "  ")
+}
+
+func applyMintJobIdentity(pod, container map[string]any, identity mintJobIdentity) error {
+	serviceAccountName := fmt.Sprintf("fs-repo-%d-%s", identity.repositoryID, identity.role)
+	if len(serviceAccountName) > 63 || !jobNamePattern.MatchString(serviceAccountName) {
+		return fmt.Errorf("mint service-account name is invalid")
+	}
+	if identity.mintURL != kubernetesMintServiceURL {
+		return fmt.Errorf("dispatcher mint URL must use the in-cluster private mint service")
+	}
+	pod["serviceAccountName"] = serviceAccountName
+	container["env"] = append(container["env"].([]any),
+		map[string]any{"name": "FULLSEND_MINT_URL", "value": identity.mintURL},
+		map[string]any{"name": "FULLSEND_REPOSITORY_ID", "value": fmt.Sprint(identity.repositoryID)},
+		map[string]any{"name": "KUBERNETES_MINT_TOKEN_FILE", "value": kubernetesMintTokenPath},
+		map[string]any{"name": "KUBERNETES_MINT_CA_FILE", "value": kubernetesMintCAPath},
+	)
+	container["volumeMounts"] = append(container["volumeMounts"].([]any), map[string]any{
+		"name": "mint-identity", "mountPath": "/var/run/secrets/fullsend/mint", "readOnly": true,
+	})
+	pod["volumes"] = append(pod["volumes"].([]any), map[string]any{
+		"name": "mint-identity",
+		"projected": map[string]any{
+			"sources": []any{
+				map[string]any{"serviceAccountToken": map[string]any{
+					"path": "token", "audience": kubernetesMintAudience, "expirationSeconds": 600,
+				}},
+				map[string]any{"configMap": map[string]any{
+					"name":  kubernetesMintServiceCAName,
+					"items": []any{map[string]any{"key": "ca.crt", "path": "ca.crt"}},
+				}},
+			},
+		},
+	})
+	return nil
 }
 
 // GatewayAttemptCleanupJob verifies remote absence independently of the run

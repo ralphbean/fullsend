@@ -56,12 +56,14 @@ type installationTokenResponse struct {
 
 // installationTokenRepository is a repo entry in the installation token response.
 type installationTokenRepository struct {
+	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
 }
 
 // GrantedScope holds the actual scope GitHub granted for the installation token.
 type GrantedScope struct {
 	Repos          []string
+	RepositoryIDs  []int64
 	Permissions    map[string]string
 	RepoSelection  string
 	AppID          string
@@ -934,6 +936,45 @@ func CreateInstallationTokenWithGrantedPermissions(ctx context.Context, githubBa
 	return createInstallationToken(ctx, githubBaseURL, jwt, installationID, org, role, level, repos, granted)
 }
 
+// CreateInstallationTokenForRepositoryIDs creates an installation token
+// restricted to the exact GitHub repository IDs and role permissions. Unlike
+// repository names, IDs cannot be reassigned to a different repository.
+// GitHub still enforces that every requested ID is covered by the installation.
+func CreateInstallationTokenForRepositoryIDs(ctx context.Context, githubBaseURL, jwt string, installationID int64, role, level string, repositoryIDs []int64) (string, string, *GrantedScope, error) {
+	if installationID <= 0 {
+		return "", "", nil, fmt.Errorf("installation ID must be positive")
+	}
+	if len(repositoryIDs) == 0 {
+		return "", "", nil, fmt.Errorf("at least one repository ID is required")
+	}
+	seen := make(map[int64]bool, len(repositoryIDs))
+	for _, repositoryID := range repositoryIDs {
+		if repositoryID <= 0 || seen[repositoryID] {
+			return "", "", nil, fmt.Errorf("repository IDs must be positive and unique")
+		}
+		seen[repositoryID] = true
+	}
+	requested, err := RolePermissionsForLevel(role, level)
+	if err != nil {
+		return "", "", nil, err
+	}
+	perms, _, err := effectiveInstallationPermissions(role, requested, nil)
+	if err != nil {
+		return "", "", nil, err
+	}
+	token, expiresAt, granted, status, body, err := postInstallationAccessToken(ctx, githubBaseURL, jwt, installationID, perms, nil, repositoryIDs)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if status != http.StatusCreated {
+		return "", "", nil, fmt.Errorf("creating installation token returned status %d: %s", status, truncateForLog(body, 256))
+	}
+	if granted != nil {
+		granted.InstallationID = installationID
+	}
+	return token, expiresAt, granted, nil
+}
+
 func createInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, org, role, level string, repos []string, granted map[string]string) (string, string, *GrantedScope, error) {
 	requested, err := RolePermissionsForLevel(role, level)
 	if err != nil {
@@ -962,12 +1003,15 @@ func createInstallationToken(ctx context.Context, githubBaseURL, jwt string, ins
 // postInstallationAccessToken POSTs /app/installations/{id}/access_tokens and
 // returns the parsed success payload, or the raw status and body for the caller
 // to surface in an error. Network and marshal errors are returned via err.
-func postInstallationAccessToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (token, expiresAt string, granted *GrantedScope, status int, body string, err error) {
+func postInstallationAccessToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string, repositoryIDs ...[]int64) (token, expiresAt string, granted *GrantedScope, status int, body string, err error) {
 	tokenReqBody := map[string]interface{}{
 		"permissions": perms,
 	}
 	if len(repos) > 0 {
 		tokenReqBody["repositories"] = repos
+	}
+	if len(repositoryIDs) > 0 && len(repositoryIDs[0]) > 0 {
+		tokenReqBody["repository_ids"] = repositoryIDs[0]
 	}
 
 	tokenReqBytes, err := json.Marshal(tokenReqBody)
@@ -1015,6 +1059,9 @@ func postInstallationAccessToken(ctx context.Context, githubBaseURL, jwt string,
 	}
 	for _, r := range tokenResp.Repositories {
 		granted.Repos = append(granted.Repos, r.FullName)
+		if r.ID > 0 {
+			granted.RepositoryIDs = append(granted.RepositoryIDs, r.ID)
+		}
 	}
 	return tokenResp.Token, tokenResp.ExpiresAt, granted, resp.StatusCode, "", nil
 }

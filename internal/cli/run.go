@@ -2218,6 +2218,43 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	var githubRefreshFailure <-chan error
+	var githubRefreshFailed <-chan struct{}
+	var githubRefreshWG sync.WaitGroup
+	if tokenFile := os.Getenv("KUBERNETES_MINT_TOKEN_FILE"); tokenFile != "" {
+		repositoryID, parseErr := strconv.ParseInt(os.Getenv("FULLSEND_REPOSITORY_ID"), 10, 64)
+		if parseErr != nil || repositoryID <= 0 {
+			return fmt.Errorf("FULLSEND_REPOSITORY_ID must be a positive repository ID in Kubernetes mint mode")
+		}
+		initialGitHubToken, tokenErr := resolveGitHubToken("")
+		if tokenErr != nil {
+			return fmt.Errorf("resolving initial GitHub credential: %w", tokenErr)
+		}
+		if err := writeInitialGitHubCredential(ctx, sandboxName, initialGitHubToken); err != nil {
+			return fmt.Errorf("setting up sandbox GitHub credential refresh: %w", err)
+		}
+		defer func() {
+			if err := clearGitHubCredential(context.WithoutCancel(ctx), sandboxName); err != nil {
+				printer.StepWarn("Could not remove the sandbox GitHub credential: " + err.Error())
+			}
+		}()
+		refreshCtx, cancel := context.WithCancel(ctx)
+		failures := make(chan error, 1)
+		failed := make(chan struct{})
+		githubRefreshFailure, githubRefreshFailed = failures, failed
+		githubRefreshWG.Add(1)
+		go func() {
+			defer githubRefreshWG.Done()
+			if refreshErr := runGitHubTokenRefresh(refreshCtx, sandboxName, resolveRole(h.Role), mintURL, runtimeLevel, repositoryID, tokenFile); refreshErr != nil {
+				failures <- refreshErr
+				close(failed)
+			}
+		}()
+		defer func() {
+			cancel()
+			githubRefreshWG.Wait()
+		}()
+	}
 	printer.StepDone(fmt.Sprintf("Sandbox bootstrapped (%.1fs)", time.Since(bootstrapStart).Seconds()))
 
 	// 8. Make project code available (copy repo root into a named subdirectory).
@@ -2486,6 +2523,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	genAISystem := agentruntime.GenAISystemFor(rt, h.Model, agentDefModel, configModelAliases)
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
+		if githubRefreshFailure != nil {
+			select {
+			case refreshErr := <-githubRefreshFailure:
+				return fmt.Errorf("GitHub installation token refresh failed: %w", refreshErr)
+			default:
+			}
+		}
 		runCount = iteration
 		transcriptErrorOverride = false
 		agentExitReason = ""
@@ -2540,6 +2584,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Start the agent span before writeIterationEnv so the runtime
 		// TRACEPARENT names this iteration's span, not the run root.
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		agentCtx, finishAgent := newAgentIterationContext(agentCtx, githubRefreshFailed)
+		defer finishAgent()
 		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
 
 		agentStart := time.Now()
@@ -2589,6 +2635,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			ForgeClient:       playbackForgeClient,
 			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
 		}, printer, agentStart, &metrics)
+		finishAgent()
+		if githubRefreshFailure != nil {
+			select {
+			case refreshErr := <-githubRefreshFailure:
+				if runErr == nil {
+					runErr = fmt.Errorf("GitHub installation token refresh failed: %w", refreshErr)
+					exitCode = 1
+				}
+			default:
+			}
+		}
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
 
@@ -3115,7 +3172,7 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //
 // MAINTENANCE: when new OIDC-related credential env vars are introduced
 // (e.g. by mint infrastructure changes), add them here. By convention the
-// vars use ACTIONS_ID_TOKEN_ or FULLSEND_GCP_OIDC_ prefixes. Every
+// vars use ACTIONS_ID_TOKEN_, KUBERNETES_MINT_, or FULLSEND_GCP_OIDC_ prefixes. Every
 // expansion site in this file consults harnessExpansionDenied, which
 // includes this map, so a single addition propagates to all deny checks.
 // Keys that provider credentials must still expand belong in
@@ -3123,6 +3180,8 @@ var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var oidcDenyKeys = map[string]bool{
 	"ACTIONS_ID_TOKEN_REQUEST_URL":   true,
 	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": true,
+	"KUBERNETES_MINT_TOKEN_FILE":     true,
+	"KUBERNETES_MINT_CA_FILE":        true,
 	"FULLSEND_GCP_OIDC_URL":          true,
 	"FULLSEND_GCP_OIDC_AUTH_FILE":    true,
 	// Vertex routing inputs are runner-only. They select and configure the
@@ -3130,6 +3189,7 @@ var oidcDenyKeys = map[string]bool{
 	// scripts, providers, or the sandbox.
 	"FULLSEND_GCP_PROJECT_ID":   true,
 	"FULLSEND_GCP_WIF_PROVIDER": true,
+	"FULLSEND_REPOSITORY_ID":    true,
 	// OpenAI WIF configuration (#6689): non-secret but runner-controlled and
 	// useless inside the sandbox. Stripped like GCP OIDC vars.
 	"FULLSEND_OPENAI_AUDIENCE":             true,
@@ -3502,6 +3562,33 @@ func endAgentSpanOnSetupError(span trace.Span, err error) {
 	recordSanitizedError(span, err)
 	span.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
 	span.End()
+}
+
+// newAgentIterationContext cancels an active agent when a GitHub credential
+// refresh fails and joins the watcher when the iteration finishes.
+func newAgentIterationContext(parent context.Context, refreshFailed <-chan struct{}) (context.Context, func()) {
+	agentCtx, cancelAgent := context.WithCancel(parent)
+	refreshWatchDone := make(chan struct{})
+	if refreshFailed != nil {
+		go func() {
+			defer close(refreshWatchDone)
+			select {
+			case <-refreshFailed:
+				cancelAgent()
+			case <-agentCtx.Done():
+			}
+		}()
+	} else {
+		close(refreshWatchDone)
+	}
+	var finishOnce sync.Once
+	finish := func() {
+		finishOnce.Do(func() {
+			cancelAgent()
+			<-refreshWatchDone
+		})
+	}
+	return agentCtx, finish
 }
 
 // iterationEnvCommand rewrites iterationEnvFile with the budget in minutes,
@@ -6606,14 +6693,17 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 		return false, nil, fmt.Errorf("invalid privilege level: %w", err)
 	}
 
-	repos, err := resolveMintRepos()
-	if err != nil {
-		return false, nil, fmt.Errorf("resolving mint repos for role %s: %w", role, err)
-	}
-
 	role = resolveRole(role)
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return false, nil, fmt.Errorf("invalid role: %w", err)
+	}
+	var repos []string
+	if os.Getenv("KUBERNETES_MINT_TOKEN_FILE") == "" {
+		var err error
+		repos, err = resolveMintRepos()
+		if err != nil {
+			return false, nil, fmt.Errorf("resolving mint repos for role %s: %w", role, err)
+		}
 	}
 	printer.StepStart("Minting agent token (role: " + role + ", level: " + level + ")")
 
@@ -6755,12 +6845,21 @@ var mintTokenBackoff = func(attempt int) time.Duration {
 func mintAgentTokenWithRetry(ctx context.Context, role, mintURL string, repos []string, level string, printer *ui.Printer) (*mintclient.MintResult, error) {
 	var lastErr error
 	for attempt := 1; attempt <= mintTokenMaxAttempts; attempt++ {
-		result, err := statusMintToken(ctx, mintclient.MintRequest{
+		request := mintclient.MintRequest{
 			MintURL: mintURL,
 			Role:    role,
 			Level:   level,
 			Repos:   repos,
-		})
+		}
+		if tokenFile := os.Getenv("KUBERNETES_MINT_TOKEN_FILE"); tokenFile != "" {
+			repositoryID, parseErr := strconv.ParseInt(os.Getenv("FULLSEND_REPOSITORY_ID"), 10, 64)
+			if parseErr != nil || repositoryID <= 0 {
+				return nil, fmt.Errorf("FULLSEND_REPOSITORY_ID must be a positive repository ID in Kubernetes mint mode")
+			}
+			request.RepositoryID = repositoryID
+			request.KubernetesTokenFile = tokenFile
+		}
+		result, err := statusMintToken(ctx, request)
 		if err != nil {
 			return nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
 		}

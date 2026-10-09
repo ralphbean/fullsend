@@ -71,7 +71,7 @@ spec:
       activeDeadlineSeconds: 50
       template:
         spec:
-          serviceAccountName: control
+          serviceAccountName: launcher
           restartPolicy: Never
           securityContext:
             runAsNonRoot: true
@@ -102,3 +102,9 @@ spec:
                       key: url
                 - name: STUB_IMAGE
                   value: registry.access.redhat.com/ubi10/ubi-minimal:10.2-1790075626
+                - name: FULLSEND_REPOSITORY_ID
+                  valueFrom:
+                    configMapKeyRef:
+                      name: fullsend-mint-dispatch
+                      key: repository-id
+                      optional: true

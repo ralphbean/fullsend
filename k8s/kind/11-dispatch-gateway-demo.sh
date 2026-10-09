@@ -11,6 +11,7 @@ selection="$LOCAL_DIR/workload/selection.json"
 [[ -s "$fixture" && -s "$selection" ]] || fail 'Deploy the fixture profile first'
 k -n fullsend-runner get secret fullsend-gateway-bundle >/dev/null || fail 'Install the gateway bundle with 07-gateway-probe.sh'
 k -n fullsend-runner get secret fullsend-gateway-auth >/dev/null || fail 'Gateway service-account Secret is missing'
+mint_repository_id="$(k -n fullsend-control get configmap fullsend-mint-dispatch --ignore-not-found -o jsonpath='{.data.repository-id}')"
 
 umask 077
 archive="$(mktemp "$LOCAL_DIR/gateway-dispatch.XXXXXX.tgz")"
@@ -73,6 +74,27 @@ for cycle in {1..160}; do
   if [[ "$cycle" == 1 ]]; then
     status 'ℹ️' "Runner Job: fullsend-runner/$job_name; sandbox derives from that durable attempt name"
     status 'ℹ️' "Evidence: PVC fullsend-runner-evidence at /evidence/$job_name"
+    if [[ -n "$mint_repository_id" ]]; then
+      expected_service_account="fs-repo-${mint_repository_id}-triage"
+      runner_job="$(k -n fullsend-runner get "job/$job_name" -o json)" || fail 'Dispatcher runner Job disappeared before mint identity verification'
+      jq -e --arg sa "$expected_service_account" --arg id "$mint_repository_id" '
+        .spec.template.spec as $pod |
+        $pod.serviceAccountName == $sa and
+        $pod.automountServiceAccountToken == false and
+        ([$pod.volumes[]? | select(.name == "mint-identity") | .projected.sources[]? | .serviceAccountToken? | select(.audience == "fullsend-k8s-mint" and .expirationSeconds == 600)] | length == 1) and
+        ([$pod.containers[]? | select(.name == "runner") | .env[]? | select(.name == "FULLSEND_REPOSITORY_ID" and .value == $id)] | length == 1) and
+        ([$pod.containers[]? | select(.name == "runner") | .env[]? | select(.name == "KUBERNETES_MINT_TOKEN_FILE" and .value == "/var/run/secrets/fullsend/mint/token")] | length == 1) and
+        ([$pod.containers[]? | select(.name == "runner") | .env[]? | select(.name == "KUBERNETES_MINT_CA_FILE" and .value == "/var/run/secrets/fullsend/mint/ca.crt")] | length == 1)
+      ' <<<"$runner_job" >/dev/null || fail 'Dispatcher runner Job does not have the exact projected mint identity'
+      service_account="$(k -n fullsend-runner get "serviceaccount/$expected_service_account" -o json)" || fail 'Dispatcher mint service account is missing'
+      jq -e --arg id "$mint_repository_id" '
+        .automountServiceAccountToken == false and
+        .metadata.labels["fullsend.ai/repository-id"] == $id and
+        .metadata.labels["fullsend.ai/role"] == "triage" and
+        .metadata.annotations["fullsend.ai/mint-identity"] == "true"
+      ' <<<"$service_account" >/dev/null || fail 'Dispatcher mint service account has a conflicting identity'
+      status '✅' "Dispatcher Job uses the repository/triage service account and a 600-second mint-audience token"
+    fi
   fi
   if [[ "$state" == succeeded && "$cleanup_state" == 'done' ]]; then
     cleanup_job="fs-clean-${job_name#fs-poc-}"

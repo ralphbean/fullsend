@@ -3,6 +3,8 @@ package mintclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -60,6 +63,11 @@ type MintRequest struct {
 	Repos     []string // required: specific repo names, or ["*"] for installation-wide token
 	TargetOrg string   // optional: cross-org mint when set and differs from caller org
 	Audience  string
+	// RepositoryID and KubernetesTokenFile select projected Kubernetes
+	// identity mode when both are supplied. The token file is re-read for
+	// every HTTP attempt so kubelet rotation is observed without caching JWTs.
+	RepositoryID        int64
+	KubernetesTokenFile string
 }
 
 // MintResult holds the minted token and its expiry.
@@ -81,19 +89,26 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 	if req.MintURL == "" {
 		return nil, fmt.Errorf("mint URL is required")
 	}
+	kubernetesTokenFile := req.KubernetesTokenFile
+	if kubernetesTokenFile == "" {
+		kubernetesTokenFile = envLookup("KUBERNETES_MINT_TOKEN_FILE")
+	}
+	isKubernetesIdentity := kubernetesTokenFile != ""
 	parsed, err := url.Parse(req.MintURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid mint URL: %w", err)
 	}
-	isLocalhost := parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1"
-	if parsed.Scheme != "https" && !isLocalhost {
+	if !validMintURL(parsed, isKubernetesIdentity) {
 		return nil, fmt.Errorf("mint URL must use HTTPS")
 	}
 	if req.Role == "" {
 		return nil, fmt.Errorf("role is required")
 	}
-	if len(req.Repos) == 0 {
+	if len(req.Repos) == 0 && !isKubernetesIdentity {
 		return nil, fmt.Errorf("repos is required")
+	}
+	if isKubernetesIdentity {
+		return callKubernetesMint(ctx, req, kubernetesTokenFile)
 	}
 	audience := req.Audience
 	if audience == "" {
@@ -111,6 +126,137 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 	}
 
 	return result, nil
+}
+
+func validMintURL(parsed *url.URL, _ bool) bool {
+	if parsed == nil || parsed.Hostname() == "" || parsed.User != nil {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	return false
+}
+
+type kubernetesMintRequestBody struct {
+	RepositoryID int64  `json:"repository_id"`
+	Role         string `json:"role"`
+	Level        string `json:"level"`
+}
+
+// callKubernetesMint uses the projected JWT only to authenticate the local
+// mint exchange. The file is read inside the retry callback so a rotated
+// kubelet projection is used by the next attempt.
+func callKubernetesMint(ctx context.Context, req MintRequest, tokenFile string) (*MintResult, error) {
+	repositoryID := req.RepositoryID
+	if repositoryID == 0 {
+		parsed, err := strconv.ParseInt(envLookup("FULLSEND_REPOSITORY_ID"), 10, 64)
+		if err != nil || parsed <= 0 {
+			return nil, fmt.Errorf("FULLSEND_REPOSITORY_ID must be a positive repository ID in Kubernetes mint mode")
+		}
+		repositoryID = parsed
+	}
+	if repositoryID <= 0 {
+		return nil, fmt.Errorf("repository ID must be positive in Kubernetes mint mode")
+	}
+	if req.Role == "" {
+		return nil, fmt.Errorf("role is required")
+	}
+	level := req.Level
+	if level == "" {
+		return nil, fmt.Errorf("level is required in Kubernetes mint mode")
+	}
+	mintHTTPClient, err := kubernetesMintHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	bodyBytes, err := json.Marshal(kubernetesMintRequestBody{RepositoryID: repositoryID, Role: req.Role, Level: level})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling Kubernetes mint request: %w", err)
+	}
+	endpoint, err := url.JoinPath(req.MintURL, "/v1/kubernetes/token")
+	if err != nil {
+		return nil, fmt.Errorf("constructing Kubernetes mint URL: %w", err)
+	}
+	var responseBody []byte
+	var statusCode int
+	err = doWithRetry(ctx, 5, func() error {
+		projectedToken, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return fmt.Errorf("reading projected Kubernetes mint token: %w", err)
+		}
+		bearer := strings.TrimSpace(string(projectedToken))
+		if !isCompactJWT(bearer) {
+			return fmt.Errorf("projected Kubernetes mint token is not a compact JWT")
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return fmt.Errorf("creating Kubernetes mint request: %w", err)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+bearer)
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := mintHTTPClient.Do(httpReq)
+		if err != nil {
+			return &retryableError{fmt.Errorf("requesting Kubernetes mint token: %w", err)}
+		}
+		defer resp.Body.Close()
+		responseBody, err = io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if err != nil {
+			return fmt.Errorf("reading Kubernetes mint response: %w", err)
+		}
+		statusCode = resp.StatusCode
+		if statusCode >= 500 {
+			return &retryableError{fmt.Errorf("Kubernetes mint returned HTTP %d: %s", statusCode, truncateBody(responseBody, 200))}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("Kubernetes mint returned HTTP %d: %s", statusCode, truncateBody(responseBody, 200))
+	}
+	var result MintResult
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return nil, fmt.Errorf("parsing Kubernetes mint response: %w", err)
+	}
+	if result.Token == "" {
+		return nil, fmt.Errorf("Kubernetes mint returned empty token")
+	}
+	return &result, nil
+}
+
+func kubernetesMintHTTPClient() (HTTPDoer, error) {
+	caFile := envLookup("KUBERNETES_MINT_CA_FILE")
+	if caFile == "" {
+		return httpClient, nil
+	}
+	caData, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading Kubernetes mint CA: %w", err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(caData) {
+		return nil, fmt.Errorf("Kubernetes mint CA file contains no certificates")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}, nil
+}
+
+func isCompactJWT(token string) bool {
+	parts := strings.Split(token, ".")
+	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
 
 type oidcTokenResponse struct {

@@ -46,6 +46,30 @@ func TestRunCommand_RequiresAgentName(t *testing.T) {
 	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
 }
 
+func TestNewAgentIterationContext(t *testing.T) {
+	t.Run("refresh failure cancels agent", func(t *testing.T) {
+		refreshFailed := make(chan struct{})
+		agentCtx, finish := newAgentIterationContext(context.Background(), refreshFailed)
+		defer finish()
+		close(refreshFailed)
+		select {
+		case <-agentCtx.Done():
+		case <-time.After(time.Second):
+			t.Fatal("refresh failure did not cancel the agent context")
+		}
+		finish()
+		require.ErrorIs(t, agentCtx.Err(), context.Canceled)
+	})
+
+	t.Run("finishing iteration cancels and joins watcher", func(t *testing.T) {
+		refreshFailed := make(chan struct{})
+		agentCtx, finish := newAgentIterationContext(context.Background(), refreshFailed)
+		finish()
+		require.ErrorIs(t, agentCtx.Err(), context.Canceled)
+		close(refreshFailed)
+	})
+}
+
 func TestRunCommand_HasFullsendDirFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("fullsend-dir")
@@ -2515,16 +2539,19 @@ func TestStripOIDCEnv(t *testing.T) {
 	}, result)
 }
 
-// TestOIDCDenyKeys_Completeness verifies that all OIDC credential vars
-// are present in oidcDenyKeys (#5832, #6689).
+// TestOIDCDenyKeys_Completeness verifies that all runner identity
+// credentials are present in oidcDenyKeys (#5832, #6689).
 func TestOIDCDenyKeys_Completeness(t *testing.T) {
 	expected := []string{
 		"ACTIONS_ID_TOKEN_REQUEST_URL",
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+		"KUBERNETES_MINT_TOKEN_FILE",
+		"KUBERNETES_MINT_CA_FILE",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
 		"FULLSEND_GCP_PROJECT_ID",
 		"FULLSEND_GCP_WIF_PROVIDER",
+		"FULLSEND_REPOSITORY_ID",
 		// OpenAI WIF configuration (#6689)
 		"FULLSEND_OPENAI_AUDIENCE",
 		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",

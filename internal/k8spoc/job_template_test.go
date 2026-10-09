@@ -153,6 +153,79 @@ func TestGatewayAttemptJobsBindDurableIdentity(t *testing.T) {
 	}
 }
 
+func TestGatewayAttemptMintJobScopesProjectedIdentity(t *testing.T) {
+	image := "localhost/fullsend-poc-runner:abcdef123456-0123456789abcdef"
+	data, err := GatewayAttemptMintJob("fs-poc-23-2", image, 17, 123456789, gatewayDemoRole, kubernetesMintServiceURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job map[string]any
+	if err := json.Unmarshal(data, &job); err != nil {
+		t.Fatal(err)
+	}
+	pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	if pod["serviceAccountName"] != "fs-repo-123456789-triage" || pod["automountServiceAccountToken"] != false {
+		t.Fatalf("unexpected projected identity: %v", pod)
+	}
+	container := pod["containers"].([]any)[0].(map[string]any)
+	env := map[string]string{}
+	for _, entry := range container["env"].([]any) {
+		item := entry.(map[string]any)
+		if value, ok := item["value"].(string); ok {
+			env[item["name"].(string)] = value
+		}
+	}
+	for key, want := range map[string]string{
+		"FULLSEND_MINT_URL":          kubernetesMintServiceURL,
+		"FULLSEND_REPOSITORY_ID":     "123456789",
+		"KUBERNETES_MINT_TOKEN_FILE": kubernetesMintTokenPath,
+		"KUBERNETES_MINT_CA_FILE":    kubernetesMintCAPath,
+	} {
+		if env[key] != want {
+			t.Fatalf("env %s = %q, want %q", key, env[key], want)
+		}
+	}
+	volumes := pod["volumes"].([]any)
+	var mintVolume map[string]any
+	for _, entry := range volumes {
+		volume := entry.(map[string]any)
+		if volume["name"] == "mint-identity" {
+			mintVolume = volume
+		}
+	}
+	if mintVolume == nil {
+		t.Fatalf("mint identity volume missing: %v", volumes)
+	}
+	sources := mintVolume["projected"].(map[string]any)["sources"].([]any)
+	token := sources[0].(map[string]any)["serviceAccountToken"].(map[string]any)
+	if token["audience"] != kubernetesMintAudience || token["expirationSeconds"] != float64(600) {
+		t.Fatalf("unexpected projected token: %v", token)
+	}
+	ca := sources[1].(map[string]any)["configMap"].(map[string]any)
+	if ca["name"] != kubernetesMintServiceCAName {
+		t.Fatalf("unexpected mint CA source: %v", ca)
+	}
+	if strings.Contains(string(data), "fullsend-app-pem") || strings.Contains(string(data), "ROLE_APP_IDS") {
+		t.Fatal("dispatcher runner Job must not receive App signing key material")
+	}
+	for _, tc := range []struct {
+		name          string
+		repositoryID  int64
+		role, mintURL string
+	}{
+		{name: "zero repository", repositoryID: 0, role: gatewayDemoRole, mintURL: kubernetesMintServiceURL},
+		{name: "invalid role", repositoryID: 123456789, role: "not a role", mintURL: kubernetesMintServiceURL},
+		{name: "non-HTTPS mint", repositoryID: 123456789, role: gatewayDemoRole, mintURL: "http://fullsend-mint.fullsend-mint.svc"},
+		{name: "external mint", repositoryID: 123456789, role: gatewayDemoRole, mintURL: "https://mint.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := GatewayAttemptMintJob("fs-poc-23-2", image, 17, tc.repositoryID, tc.role, tc.mintURL); err == nil {
+				t.Fatal("accepted invalid mint job identity")
+			}
+		})
+	}
+}
+
 func assertGatewayInsecureWarning(t *testing.T, container map[string]any) {
 	t.Helper()
 	found := false

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,7 @@ import (
 type kubeClient struct {
 	client                                      *http.Client
 	host, token, namespace, image, gatewayImage string
+	mintRepositoryID                            int64
 }
 
 func newKubeClient() (*kubeClient, error) {
@@ -33,7 +35,22 @@ func newKubeClient() (*kubeClient, error) {
 		return nil, err
 	}
 	k.gatewayImage = os.Getenv("GATEWAY_RUNNER_IMAGE")
+	if err := configureMintRepositoryID(k, os.Getenv("FULLSEND_REPOSITORY_ID")); err != nil {
+		return nil, err
+	}
 	return k, nil
+}
+
+func configureMintRepositoryID(k *kubeClient, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	repositoryID, err := parsePositiveRepositoryID(raw)
+	if err != nil {
+		return fmt.Errorf("invalid FULLSEND_REPOSITORY_ID for dispatcher mint: %w", err)
+	}
+	k.mintRepositoryID = repositoryID
+	return nil
 }
 
 func newKubeClientWithFiles(host, port, image, tokenPath, caPath string) (*kubeClient, error) {
@@ -53,6 +70,14 @@ func newKubeClientWithFiles(host, port, image, tokenPath, caPath string) (*kubeC
 		return nil, fmt.Errorf("invalid Kubernetes CA")
 	}
 	return &kubeClient{client: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}, host: "https://" + host + ":" + port, token: string(token), namespace: "fullsend-runner", image: image}, nil
+}
+
+func parsePositiveRepositoryID(raw string) (int64, error) {
+	repositoryID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || repositoryID <= 0 || strconv.FormatInt(repositoryID, 10) != raw {
+		return 0, fmt.Errorf("must be a canonical positive integer")
+	}
+	return repositoryID, nil
 }
 
 type kubeJob struct {
@@ -134,16 +159,92 @@ func (k *kubeClient) create(ctx context.Context, a attempt) (kubeJob, error) {
 	var job kubeJob
 	var body any = stubJob(a, k.namespace, k.image)
 	if isGatewayAttempt(a) {
-		data, err := GatewayAttemptJob(a.name, k.gatewayImage, a.id)
+		var data []byte
+		var err error
+		if k.mintRepositoryID > 0 {
+			data, err = GatewayAttemptMintJob(a.name, k.gatewayImage, a.id, k.mintRepositoryID, gatewayDemoRole, kubernetesMintServiceURL)
+		} else {
+			data, err = GatewayAttemptJob(a.name, k.gatewayImage, a.id)
+		}
 		if err != nil {
 			return job, err
 		}
 		if err := json.Unmarshal(data, &body); err != nil {
 			return job, err
 		}
+		if k.mintRepositoryID > 0 {
+			if err := k.ensureMintServiceAccount(ctx, k.mintRepositoryID, gatewayDemoRole); err != nil {
+				return job, err
+			}
+		}
 	}
 	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", body, &job)
 	return job, err
+}
+
+type kubeServiceAccount struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Labels      map[string]string `json:"labels"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken"`
+}
+
+func (k *kubeClient) ensureMintServiceAccount(ctx context.Context, repositoryID int64, role string) error {
+	if repositoryID <= 0 || role != gatewayDemoRole {
+		return fmt.Errorf("dispatcher mint identity is not authorized")
+	}
+	name := fmt.Sprintf("fs-repo-%d-%s", repositoryID, role)
+	path := "/api/v1/namespaces/" + k.namespace + "/serviceaccounts/" + name
+	var current kubeServiceAccount
+	status, err := k.request(ctx, "GET", path, nil, &current)
+	if err != nil && status != http.StatusNotFound {
+		return err
+	}
+	if status == http.StatusOK {
+		return validateMintServiceAccount(current, name, repositoryID, role)
+	}
+	disabled := false
+	body := map[string]any{
+		"apiVersion": "v1", "kind": "ServiceAccount",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": k.namespace,
+			"labels": map[string]string{
+				"app.kubernetes.io/part-of": "fullsend-kind-poc",
+				"fullsend.ai/repository-id": fmt.Sprint(repositoryID),
+				"fullsend.ai/role":          role,
+			},
+			"annotations": map[string]string{"fullsend.ai/mint-identity": "true"},
+		},
+		"automountServiceAccountToken": disabled,
+	}
+	if status, err = k.request(ctx, "POST", "/api/v1/namespaces/"+k.namespace+"/serviceaccounts", body, nil); err == nil {
+		return nil
+	} else if status != http.StatusConflict {
+		return err
+	}
+	// Concurrent dispatchers may both observe absence. A create conflict is
+	// safe only when the winning object has exactly the expected identity.
+	status, err = k.request(ctx, "GET", path, nil, &current)
+	if err != nil || status != http.StatusOK {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("mint service account %s disappeared after create conflict", name)
+	}
+	return validateMintServiceAccount(current, name, repositoryID, role)
+}
+
+func validateMintServiceAccount(account kubeServiceAccount, name string, repositoryID int64, role string) error {
+	if account.Metadata.Name != name || account.AutomountServiceAccountToken == nil || *account.AutomountServiceAccountToken ||
+		account.Metadata.Labels["fullsend.ai/repository-id"] != fmt.Sprint(repositoryID) ||
+		account.Metadata.Labels["fullsend.ai/role"] != role ||
+		account.Metadata.Annotations["fullsend.ai/mint-identity"] != "true" {
+		return fmt.Errorf("existing mint service account %s conflicts with the approved repository/role identity", name)
+	}
+	return nil
 }
 
 func (k *kubeClient) createGatewayCleanup(ctx context.Context, a attempt) (kubeJob, error) {

@@ -21,6 +21,19 @@ import (
 
 // buildHandler creates the HTTP handler chain from environment variables.
 func buildHandler() (http.Handler, error) {
+	if policyPath := os.Getenv("KUBERNETES_MINT_CONFIG_FILE"); policyPath != "" {
+		pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
+		if err != nil {
+			return nil, fmt.Errorf("initializing PEM accessor: %w", err)
+		}
+		kubernetesHandler, err := newKubernetesMintHandler(policyPath, pemAccessor)
+		if err != nil {
+			return nil, fmt.Errorf("initializing Kubernetes identity mint: %w", err)
+		}
+		mux := http.NewServeMux()
+		mux.Handle(kubernetesMintPath, kubernetesHandler)
+		return mux, nil
+	}
 	if len(mintcore.SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))) == 0 {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
@@ -84,6 +97,10 @@ func run(ctx context.Context) error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	tlsCert, tlsKey, err := tlsFilesFromEnvironment()
+	if err != nil {
+		return err
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -93,10 +110,24 @@ func run(ctx context.Context) error {
 	}()
 
 	log.Printf("fullsend-mint starting on :%s (standalone mode)", port)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		return fmt.Errorf("server error: %w", err)
+	var serveErr error
+	if tlsCert != "" {
+		serveErr = srv.ListenAndServeTLS(tlsCert, tlsKey)
+	} else {
+		serveErr = srv.ListenAndServe()
+	}
+	if serveErr != http.ErrServerClosed {
+		return fmt.Errorf("server error: %w", serveErr)
 	}
 	return nil
+}
+
+func tlsFilesFromEnvironment() (string, string, error) {
+	cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
+	if (cert == "") != (key == "") {
+		return "", "", fmt.Errorf("TLS_CERT_FILE and TLS_KEY_FILE must be configured together")
+	}
+	return cert, key, nil
 }
 
 func main() {
