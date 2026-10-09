@@ -142,6 +142,7 @@ for the four-step migration to the bare built-in names above.
 | `--image` | per-role pin | Container image the agent runs inside |
 | `--timeout-minutes` | `15` | Agent timeout in minutes |
 | `--validation-loop` | `false` | Add a `validation_loop` checking output against the schema |
+| `--workflow` | | `<definition>/<name>`: write a harness [`workflow:`](../reference/harness-reference.md#field-details) that starts workflow `<name>` from the `config.yaml` `workflows:` entry `<definition>`, and add `Workflow` to the agent's `tools:`. Claude runtime only. See [Starting a workflow](#starting-a-workflow) |
 | `--no-register` | `false` | Write the files but do not touch `config.yaml` |
 | `--force` | `false` | Overwrite generated files (never shared assets) |
 | `--dry-run` | `false` | Validate and print what would be written, writing nothing |
@@ -243,6 +244,45 @@ fullsend agent new -f link-check.agent.yaml
 
 Unknown keys are rejected rather than ignored, so a typo does not silently
 produce a different agent. Command-line flags override spec keys.
+
+### Starting a workflow
+
+`--workflow <definition>/<name>` (spec key `workflow:`) generates an agent
+whose run starts a Claude Code workflow from a workflow-definition repository
+([ADR 0130](../ADRs/0130-workflow-definition-repos-are-harness-resources.md)):
+
+```bash
+fullsend agent new pipeline-runner --workflow sample-pipeline/run-all
+```
+
+```
+  ✓ Created agent "pipeline-runner" in .fullsend
+  harness/pipeline-runner.yaml
+  agents/pipeline-runner.md
+  schemas/pipeline-runner-result.schema.json
+  scripts/post-pipeline-runner.sh
+  policies/base.yaml
+  ✓ Added agent "pipeline-runner"
+  ! The harness starts workflow run-all from definition "sample-pipeline"; config.yaml needs a workflows: entry of that name, for example:
+  workflows:
+    - name: sample-pipeline
+      source: https://github.com/example-org/sample-pipeline/tree/<commit-sha>#sha256=<tree-hash>
+```
+
+When `config.yaml` already has a `workflows:` entry of that name, the warning is replaced by `The harness starts workflow run-all from definition "sample-pipeline", which config.yaml pins to <source>`. Either way the output is followed by the next steps, whose first step reads `Fill in the marked sections of agents/<name>.md — the runner starts the workflow; that file sets the main loop's instructions and tools.` The harness gets:
+
+```yaml
+workflow:
+  definition: sample-pipeline
+  name: run-all
+```
+
+and the agent's `tools:` ends with `Workflow`, which `fullsend run` requires of
+an agent that lists its tools. `agent new` does not write the `workflows:`
+entry: add it to `config.yaml` as printed, with the definition's commit and
+tree hash (see [`workflows:`](../reference/config-reference.md#workflows)).
+To pass `args`, add `args:` under `workflow:` in the harness. Any runtime but
+`claude` is refused.
 
 ### Checking the result
 

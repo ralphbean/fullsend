@@ -32,6 +32,7 @@ type agentNewFlags struct {
 	image          string
 	timeoutMinutes int
 	validationLoop bool
+	workflow       string
 	noRegister     bool
 	force          bool
 	dryRun         bool
@@ -90,6 +91,7 @@ Examples:
 	cmd.Flags().IntVar(&f.timeoutMinutes, "timeout-minutes", agentnew.DefaultTimeoutMinutes, "agent timeout in minutes")
 	cmd.Flags().BoolVar(&f.validationLoop, "validation-loop", false,
 		"add a validation_loop that checks agent output against the schema (needs python3 with the jsonschema package on the runner)")
+	cmd.Flags().StringVar(&f.workflow, "workflow", "", "start a workflow: <definition>/<name>, a config.yaml workflows: name and the workflow in it (claude runtime only)")
 	cmd.Flags().BoolVar(&f.noRegister, "no-register", false, "write the files but do not add the agent to config.yaml")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite generated files that already exist (never overwrites shared scaffold assets)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "validate and report what would be written without writing anything")
@@ -109,6 +111,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	runtimeName = f.runtime
 	on, trigger := f.on, f.trigger
 	slug, image, description := f.slug, f.image, f.description
+	workflow := f.workflow
 	modelFromSpec := false
 
 	if f.specFile != "" {
@@ -150,6 +153,9 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		}
 		if !f.changed("image") {
 			image = spec.Image
+		}
+		if !f.changed("workflow") {
+			workflow = spec.Workflow
 		}
 		if !f.changed("on") && !f.changed("trigger") {
 			on, trigger = spec.On, spec.Trigger
@@ -208,6 +214,14 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		image = role.Image
 	}
 	opts.Image = image
+
+	if workflow != "" {
+		spec, wfErr := agentnew.ParseWorkflow(workflow)
+		if wfErr != nil {
+			return opts, "", "", wfErr
+		}
+		opts.Workflow = spec
+	}
 
 	if runtimeName != "" && !slices.Contains(userFacingRuntimes(), runtimeName) {
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
@@ -287,6 +301,7 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 			printer.Raw(string(rf.Data))
 		}
 		printer.StepInfo("Nothing was written and no agent was registered")
+		printWorkflowReminder(opts, f.fullsendDir, printer)
 		return nil
 	}
 
@@ -318,8 +333,30 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 		}
 	}
 
+	printWorkflowReminder(opts, f.fullsendDir, printer)
 	printNextSteps(opts, f, printer)
 	return nil
+}
+
+// printWorkflowReminder tells the user whether config.yaml already pins
+// the definition the harness workflow: names. agent new does not write
+// workflows: entries, and a run without one fails resolution, so a missing
+// entry gets an example to copy.
+func printWorkflowReminder(opts agentnew.Options, fullsendDir string, printer *ui.Printer) {
+	if opts.Workflow == nil {
+		return
+	}
+	if cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true}); err == nil {
+		for _, e := range cfg.WorkflowEntries() {
+			if strings.EqualFold(e.Name, opts.Workflow.Definition) {
+				printer.StepInfo(fmt.Sprintf("The harness starts workflow %s from definition %q, which config.yaml pins to %s", opts.Workflow.Name, e.Name, e.Source))
+				return
+			}
+		}
+	}
+	printer.StepWarn(fmt.Sprintf("The harness starts workflow %s from definition %q; config.yaml needs a workflows: entry of that name, for example:", opts.Workflow.Name, opts.Workflow.Definition))
+	printer.Raw(fmt.Sprintf("  workflows:\n    - name: %s\n      source: https://github.com/example-org/%s/tree/<commit-sha>#sha256=<tree-hash>\n",
+		opts.Workflow.Definition, opts.Workflow.Definition))
 }
 
 // printNextSteps tells the user what to edit, how to test locally, and how to
@@ -327,7 +364,11 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 // went into the harness, so the instruction and the CEL cannot disagree.
 func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer) {
 	printer.Raw("\nNext:\n")
-	printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
+	if opts.Workflow != nil {
+		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — the runner starts the workflow; that file sets the main loop's instructions and tools.\n", opts.Name))
+	} else {
+		printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
+	}
 	// The dry-run variable is printed so that following step 2 literally
 	// never posts a real comment on the issue it was pointed at.
 	printer.Raw(fmt.Sprintf("  2. Test locally, printing the result instead of commenting:\n"+

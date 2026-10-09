@@ -22,11 +22,15 @@ type WorkflowSpec struct {
 // config workflows: name rule and the plugin basename rule.
 var validWorkflowIdent = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-// validateWorkflow is the Validate() check for the workflow: field. It
-// checks shape only; whether the definition exists is known once
-// config.yaml is loaded, at resolution.
+// validateWorkflow is the Validate() check for the workflow: field.
 func (h *Harness) validateWorkflow() error {
-	w := h.Workflow
+	return ValidateWorkflowSpec(h.Workflow)
+}
+
+// ValidateWorkflowSpec checks the shape of a workflow: field; nil passes.
+// Whether the definition exists is known once config.yaml is loaded, at
+// resolution.
+func ValidateWorkflowSpec(w *WorkflowSpec) error {
 	if w == nil {
 		return nil
 	}

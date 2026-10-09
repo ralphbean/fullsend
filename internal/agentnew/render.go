@@ -143,6 +143,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		TimeoutMinutes: opts.TimeoutMinutes,
 		ReadonlyRepo:   role.ReadonlyRepo,
 		Trigger:        opts.Trigger,
+		Workflow:       opts.Workflow,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{
 				"ISSUE_URL":      "${GITHUB_ISSUE_URL}",
@@ -365,8 +366,17 @@ func renderPostScript(name string) ([]byte, error) {
 
 // toolsFor returns the frontmatter tools list matching the rendered body.
 // fullsend-check-output is only instructed when the validation loop is on,
-// so it only appears in the Bash allowlist then.
+// so it only appears in the Bash allowlist then. A workflow agent also
+// needs Workflow, or its main loop cannot start the workflow command.
 func toolsFor(opts Options) string {
+	tools := baseToolsFor(opts)
+	if opts.Workflow != nil {
+		tools += ", Workflow"
+	}
+	return tools
+}
+
+func baseToolsFor(opts Options) string {
 	bash := "gh,jq"
 	if opts.ValidationLoop {
 		bash = "gh,jq,fullsend-check-output"

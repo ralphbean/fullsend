@@ -3,6 +3,8 @@ package agentnew
 import (
 	"strings"
 	"testing"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
 func validOptions() Options {
@@ -39,6 +41,13 @@ func TestOptionsValidateRejects(t *testing.T) {
 		{"bad slug", func(o *Options) { o.Slug = "-leading-dash" }, "slug"},
 		{"negative timeout", func(o *Options) { o.TimeoutMinutes = -1 }, "non-negative"},
 		{"empty image", func(o *Options) { o.Image = "" }, "image"},
+		{"workflow under pi", func(o *Options) {
+			o.Runtime = "pi"
+			o.Workflow = &harness.WorkflowSpec{Definition: "sample-pipeline", Name: "run-all"}
+		}, "workflow needs the claude runtime, and this agent resolves to pi"},
+		{"workflow with a bad name", func(o *Options) {
+			o.Workflow = &harness.WorkflowSpec{Definition: "sample-pipeline", Name: "run all"}
+		}, "workflow.name"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,6 +139,35 @@ func TestTriggerlessAgentIsRefusedLoudly(t *testing.T) {
 	for _, want := range []string{"--on", "--trigger", "never dispatched"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+func TestParseWorkflow(t *testing.T) {
+	spec, err := ParseWorkflow("sample-pipeline/run-all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Definition != "sample-pipeline" || spec.Name != "run-all" || spec.Args != "" {
+		t.Errorf("unexpected spec: %+v", spec)
+	}
+	for _, bad := range []string{"", "sample-pipeline", "/run-all", "sample-pipeline/", "a/b/c"} {
+		if _, err := ParseWorkflow(bad); err == nil || !strings.Contains(err.Error(), "must be <definition>/<name>") {
+			t.Errorf("ParseWorkflow(%q) = %v, want the <definition>/<name> error", bad, err)
+		}
+	}
+	if _, err := ParseWorkflow("sample pipeline/run-all"); err == nil || !strings.Contains(err.Error(), "workflow.definition") {
+		t.Errorf("a definition the harness refuses must be refused here: %v", err)
+	}
+}
+
+func TestOptionsValidateAcceptsWorkflowOnClaude(t *testing.T) {
+	for _, runtimeName := range []string{"", "claude"} {
+		o := validOptions()
+		o.Runtime = runtimeName
+		o.Workflow = &harness.WorkflowSpec{Definition: "sample-pipeline", Name: "run-all"}
+		if err := o.Validate(); err != nil {
+			t.Errorf("runtime %q: %v", runtimeName, err)
 		}
 	}
 }

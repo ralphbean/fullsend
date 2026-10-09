@@ -219,11 +219,12 @@ you would add or change it by hand.
 | `harness/<name>.yaml` | `timeout_minutes:` | always | `--timeout-minutes` / spec `timeout_minutes` | — |
 | `harness/<name>.yaml` | `trigger:` | always | `--on` / `--trigger` or spec `on`/`trigger` | — |
 | `harness/<name>.yaml` | `validation_loop:` | only when asked for | `--validation-loop` / spec `validation_loop` | — |
+| `harness/<name>.yaml` | `workflow:` | only when asked for; `config.yaml` `workflows:` is not written | `--workflow` / spec `workflow` | `args:` — see [Starting a workflow](../../cli/agent.md#starting-a-workflow) |
 | `harness/<name>.yaml` | `overlays:` (commented) | only for pi on an `openai/` model | — | uncomment for Vertex sub-agents ([Pick a route](#pick-a-route)); write your own for other conditional fields |
 | `harness/<name>.yaml` | `skills:`, `base:` | never | — | see [Skills](#skills), [Harness composition with `base`](#harness-composition-with-base) |
 | `agents/<name>.md` | `name:`, `model:` | always | `<name>` / resolved model | — |
 | `agents/<name>.md` | `description:` | always | `--description` / spec `description` | — |
-| `agents/<name>.md` | `tools:` | always, a role/runtime default | — | tighten the Bash allowlist, or add `Agent` for any sub-agents |
+| `agents/<name>.md` | `tools:` | always, a role/runtime default, plus `Workflow` with `--workflow` | — | tighten the Bash allowlist, or add `Agent` for any sub-agents |
 | `agents/<name>.md` | `skills:`, `disallowedTools:` | never | — | see [Skills](#skills) |
 | `schemas/<name>-result.schema.json` | `status`, `summary`, `comment` | always | — | add a field for a richer result; update `post-<name>.sh` to read it |
 | `config.yaml` `agents:` entry | `name:`, `source:` | always, unless `--no-register` | `<name>` / `harness/<name>.yaml` | — |

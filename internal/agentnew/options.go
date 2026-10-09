@@ -41,6 +41,23 @@ type Options struct {
 	// credentials the harness asks for and whether the model must be an
 	// OpenAI id.
 	Runtime string
+	// Workflow is the harness workflow: field (--workflow
+	// <definition>/<name>, ADR 0130), or nil.
+	Workflow *harness.WorkflowSpec
+}
+
+// ParseWorkflow reads a --workflow value, <definition>/<name>, into the
+// harness workflow: field. Both parts are checked like the field itself.
+func ParseWorkflow(s string) (*harness.WorkflowSpec, error) {
+	definition, name, ok := strings.Cut(s, "/")
+	if !ok || definition == "" || name == "" || strings.Contains(name, "/") {
+		return nil, fmt.Errorf("workflow %q must be <definition>/<name>: a config.yaml workflows: name and the workflow in it, for example sample-pipeline/run-all", s)
+	}
+	spec := &harness.WorkflowSpec{Definition: definition, Name: name}
+	if err := harness.ValidateWorkflowSpec(spec); err != nil {
+		return nil, err
+	}
+	return spec, nil
 }
 
 // Validate checks every field that reaches a generated file, and does so
@@ -89,6 +106,16 @@ func (o *Options) Validate() error {
 	}
 	if o.Image == "" {
 		return fmt.Errorf("image must not be empty")
+	}
+	if o.Workflow != nil {
+		if err := harness.ValidateWorkflowSpec(o.Workflow); err != nil {
+			return err
+		}
+		// ADR 0130 rule 4: fullsend run refuses workflow: on any other
+		// runtime, so the generator does too.
+		if o.Runtime != "" && o.Runtime != "claude" {
+			return fmt.Errorf("workflow needs the claude runtime, and this agent resolves to %s: pass --runtime claude, or drop the workflow", o.Runtime)
+		}
 	}
 	return nil
 }

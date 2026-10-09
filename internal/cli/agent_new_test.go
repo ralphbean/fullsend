@@ -370,6 +370,81 @@ func TestAgentNewNextStepsDryRun(t *testing.T) {
 	}
 }
 
+// TestAgentNewWorkflow: --workflow writes the workflow: block, adds
+// Workflow to tools: and reminds that config.yaml must pin the definition.
+func TestAgentNewWorkflow(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "workflow")
+	f.workflow = "sample-pipeline/run-all"
+	out, err := runNew(t, "pipeline-runner", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	h, err := harness.Load(filepath.Join(dir, "harness", "pipeline-runner.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Workflow == nil || h.Workflow.Definition != "sample-pipeline" || h.Workflow.Name != "run-all" {
+		t.Errorf("workflow: = %+v", h.Workflow)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, "agents", "pipeline-runner.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), ", Workflow\n") {
+		t.Errorf("tools: should list Workflow:\n%s", md)
+	}
+	for _, want := range []string{
+		`config.yaml needs a workflows: entry of that name`,
+		"the runner starts the workflow; that file sets the main loop's instructions and tools.",
+		"    - name: sample-pipeline\n      source: https://github.com/example-org/sample-pipeline/tree/<commit-sha>#sha256=<tree-hash>\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output should contain %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAgentNewWorkflowDryRunAndSpec(t *testing.T) {
+	dir := newFullsendDir(t)
+	spec := filepath.Join(t.TempDir(), "runner.agent.yaml")
+	if err := os.WriteFile(spec, []byte("version: \"1\"\nname: pipeline-runner\nworkflow: sample-pipeline/run-all\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := defaultFlags(dir, "dry-run")
+	f.specFile = spec
+	f.dryRun = true
+	out, err := runNew(t, "", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "workflow:\n  definition: sample-pipeline\n  name: run-all\n") {
+		t.Errorf("the spec's workflow should reach the rendered harness:\n%s", out)
+	}
+	if !strings.Contains(out, "config.yaml needs a workflows: entry") {
+		t.Errorf("a dry run should print the reminder too:\n%s", out)
+	}
+}
+
+func TestAgentNewWorkflowRefused(t *testing.T) {
+	dir := newFullsendDir(t)
+	f := defaultFlags(dir, "workflow")
+	f.workflow = "sample-pipeline"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "must be <definition>/<name>") {
+		t.Errorf("err = %v, want the <definition>/<name> error", err)
+	}
+
+	f = defaultFlags(dir, "workflow", "runtime")
+	f.workflow = "sample-pipeline/run-all"
+	f.runtime = "pi"
+	if _, err := runNew(t, "pipeline-runner", f); err == nil || !strings.Contains(err.Error(), "workflow needs the claude runtime") {
+		t.Errorf("err = %v, want the claude runtime error", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "harness", "pipeline-runner.yaml")); !os.IsNotExist(err) {
+		t.Errorf("a refused run must write nothing: %v", err)
+	}
+}
+
 func TestResolveAgentNewOptions(t *testing.T) {
 	dir := newFullsendDir(t)
 
@@ -622,4 +697,26 @@ func writeSpec(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestAgentNewWorkflowPinnedInConfig checks that agent new reports an
+// existing workflows: entry instead of asking for one.
+func TestAgentNewWorkflowPinnedInConfig(t *testing.T) {
+	dir := newFullsendDir(t)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nroles: [triage]\nworkflows:\n  - name: sample-pipeline\n    source: pipelines/sample-pipeline\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := defaultFlags(dir, "workflow")
+	f.workflow = "sample-pipeline/run-all"
+	out, err := runNew(t, "pipeline-runner", f)
+	if err != nil {
+		t.Fatalf("runAgentNew: %v\n%s", err, out)
+	}
+	if want := `The harness starts workflow run-all from definition "sample-pipeline", which config.yaml pins to pipelines/sample-pipeline`; !strings.Contains(out, want) {
+		t.Errorf("output should contain %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "needs a workflows: entry") {
+		t.Errorf("an existing entry must not be asked for again:\n%s", out)
+	}
 }

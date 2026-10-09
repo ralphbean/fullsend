@@ -30,6 +30,8 @@ type AgentSpec struct {
 	Image          string `yaml:"image,omitempty"`
 	TimeoutMinutes *int   `yaml:"timeout_minutes,omitempty"`
 	ValidationLoop bool   `yaml:"validation_loop,omitempty"`
+	// Workflow is <definition>/<name>, as for --workflow.
+	Workflow string `yaml:"workflow,omitempty"`
 }
 
 // LoadSpecFile reads and validates a spec file.
