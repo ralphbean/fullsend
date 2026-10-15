@@ -13,6 +13,12 @@ Observed through 2026-10-09. This is the implementation and verification status 
 
 ## Evidence and limits
 
+### Architectural caveat: do not copy the PoC's dispatch structure
+
+**Readers beware: the verified PoC behavior does not validate its package or command boundaries as the long-term design.** `fullsend k8s-poc dispatch` currently owns PostgreSQL selection/reservations, Kubernetes Job creation, and Job reconciliation in one PoC-specific path. The intended direction is to retain normal `fullsend poll` and `fullsend dispatch` invocations, configured by a CLI flag or configuration to write outputs to PostgreSQL and read inputs from PostgreSQL.
+
+Kubernetes Job lifecycle management may instead be a separate K8s-specific command and code scope, invoked by the same dispatch CronJob if useful but separate from the `fullsend dispatch` invocation. The exact command boundary and database interfaces remain design work. The current PoC intentionally takes shortcuts here; **do not use its structure as the implementation template.**
+
 ### Milestones 1–3
 
 - [RESULTS.md](RESULTS.md) records the two milestone 1 resets, fixture smoke results, persistence checks, and milestone 2 database tests. The fixture loop used stub Jobs. Some recovery cases were exercised by an API simulator rather than a killed process in kind.

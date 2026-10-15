@@ -4,6 +4,12 @@ Planning handoff started 2026-10-02 from baseline checkout `90833a878`. For curr
 
 Build this incrementally in `fullsend-ai/fullsend`. The first useful stopping point is milestone 2: a reproducible, credential-free poll → PostgreSQL → dispatch → Kubernetes Job → recorded result demonstration. Milestone 4 adds representative Fullsend work through a user-provisioned HyperShell gateway. Milestones 5 and 6 independently replace repository and inference credentials with workload identity.
 
+## Architectural caveat: the PoC is not the target shape
+
+**Readers beware: do not implement the long-term design by copying the PoC's `internal/k8spoc/` structure.** The target should use the normal `fullsend poll` and `fullsend dispatch` invocations, configured through a CLI flag or configuration to write their outputs to PostgreSQL and read their inputs from PostgreSQL. The exact option and shared interfaces remain to be designed.
+
+Kubernetes Job lifecycle management may belong to a separate Kubernetes-specific command and code scope, even if the existing dispatch CronJob invokes that command alongside `fullsend dispatch`. Do not assume that Job creation, observation, cleanup, and reconciliation belong inside the main dispatch invocation. Keep this boundary open for the rationalization work; the PoC couples these concerns as an implementation shortcut.
+
 ## Inputs and decisions
 
 - Primary design: `/home/rbean/code/notes/dispatch-architecture-github-gitlab-kubernetes.html`, especially the invocation, concurrency, identity, and recovery sections.
@@ -103,7 +109,7 @@ Use an in-cluster database Service with readiness probes. Development credential
 
 ## Milestone 2 — Durable polling and dispatch with fixtures
 
-Implement bounded cycle functions around existing Fullsend code. Suggested new packages match the HTML: `internal/service/`, `internal/store/`, and `internal/launcher/kubernetes/`. Extend CLI wiring in `internal/cli/poll.go` and `internal/cli/dispatch.go`; choose final flags during implementation and document them. There is currently no PostgreSQL/Kubernetes dispatch mode to invoke.
+Implement bounded cycle functions around existing Fullsend code. Suggested new packages match the HTML: `internal/service/`, `internal/store/`, and `internal/launcher/kubernetes/`. Extend the existing `fullsend poll` and `fullsend dispatch` invocations with a not-yet-designed flag or configuration that uses PostgreSQL for their handoff. Keep Kubernetes Job lifecycle management in a separate K8s-specific command/code scope; the same CronJob may invoke it, but it must not become part of the `fullsend dispatch` code scope by default. There is currently no PostgreSQL mode for the normal commands to invoke. **The current `k8s-poc` implementation is a shortcut and is not the architecture template.**
 
 ```text
 fixture source → poller CronJob → PostgreSQL → dispatcher CronJob
