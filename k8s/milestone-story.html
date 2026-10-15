@@ -239,11 +239,12 @@
           <p class="evidence">Source trail: <a href="STATUS.md">dated status and evidence</a><a href="RESULTS.md">fixture results</a></p>
           <section class="explore" aria-labelledby="explore-title-1">
             <h3 id="explore-title-1">Explore this milestone</h3>
-            <div class="explore-step"><h4>1. Build and smoke the owned fixture cluster</h4><p>From the repository root, deploy the fixture profile. It creates or reuses the named kind cluster, applies the control plane and database, then runs baseline checks.</p><pre><code>k8s/kind/deploy.sh --profile fixture</code></pre></div>
-            <div class="explore-step"><h4>2. Inspect readiness and the report</h4><p>The status command uses the dedicated PoC kubeconfig. The smoke summary records the counts and build/tool metadata.</p><pre><code>k8s/kind/status.sh --profile fixture
-latest_report="$(ls -td k8s/.state/smoke-* | head -1)"
-cat "$latest_report/summary.txt"
-kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control get pvc</code></pre></div>
+            <div class="explore-step"><h4>1. Deploy the fixture profile</h4><p>Run this from the repository root. It creates or reuses the owned kind cluster, builds the images, applies PostgreSQL and the fixture workloads, and runs the smoke checks. On failure, the final line prints the exit code; inspect the error above and stop here.</p><pre><code>k8s/kind/deploy.sh --profile fixture || printf '⚠️ deploy failed (exit %s); inspect the output above and stop here.\n' "$?"</code></pre></div>
+            <div class="explore-step"><h4>2. Inspect the current resources</h4><p>This is a read-only summary. A successful fixture deploy should list resources in both namespaces. “No resources found” means the cluster is not populated; return to step 1 and inspect its output.</p><pre><code>k8s/kind/status.sh --profile fixture</code></pre></div>
+            <div class="explore-step"><h4>3. Check PostgreSQL</h4><p>The database StatefulSet should exist and report its ready replica. A NotFound or connection error means the deploy did not finish successfully.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control get statefulset/postgres</code></pre></div>
+            <div class="explore-step"><h4>4. Check persistent storage</h4><p>The PostgreSQL PVC should appear here, normally with status <code>Bound</code>.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control get pvc</code></pre></div>
+            <div class="explore-step"><h4>5. Locate this deploy’s smoke report</h4><p>Run after a successful deploy. This records and prints the newest fixture report directory in your current shell; continue in the same terminal.</p><pre><code>report_dir="$(ls -td k8s/.state/smoke-* | head -1)"; printf '%s\n' "$report_dir"</code></pre></div>
+            <div class="explore-step"><h4>6. Read the recorded smoke result</h4><p>The summary should show the expected four fixture outcomes. The report lookup is meaningful only after step 1 succeeds; otherwise the newest directory may be old.</p><pre><code>cat "$report_dir/summary.txt"</code></pre></div>
           </section>
           <div class="chapter-nav"><button type="button" data-prev>← Introduction</button><button type="button" data-next>Next chapter →</button></div>
         </section>
