@@ -415,11 +415,60 @@ ls -lt k8s/.state | head</code></pre></div>
           <p class="evidence">Source trail: <a href="STATUS.md">WIF checks and caveats</a><a href="gcp/README.md">JWKS refresh and optional infrastructure</a><a href="PLAN.md">milestone 6 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-6">
             <h3 id="explore-title-6">Explore this milestone</h3>
-            <div class="explore-step"><h4>Before you start: set the existing Google Cloud resource names</h4><p>Replace these placeholders with the project, pool, provider, and inference service account already configured for this PoC. These commands use those resources; they do not create them.</p><pre><code>export GCP_PROJECT_ID='your-project-id'
-export GCP_PROJECT_NUMBER='123456789012'
-export GCP_WIF_POOL='your-existing-pool'
-export GCP_WIF_PROVIDER='your-existing-provider'
-export GCP_INFERENCE_SERVICE_ACCOUNT='fullsend-inference@your-project-id.iam.gserviceaccount.com'</code></pre></div>
+            <div class="explore-step">
+              <h4>Before you start: create a PoC Google Cloud identity setup</h4>
+              <p>You need a Google Cloud project with billing enabled for Vertex. Use a project you can administer or create a dedicated PoC project first. Your gcloud identity needs permission to enable APIs, create workload identity pools/providers and service accounts, and grant project and service-account IAM. See Google's <a href="https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-kubernetes">Kubernetes Workload Identity Federation guide</a>.</p>
+              <p>Run these from the repository root and keep the same terminal open. Use a unique project ID; the pool, provider, and service-account names below are PoC examples.</p>
+              <pre><code>export GCP_PROJECT_ID='YOUR_GCP_PROJECT_ID'
+export GCP_PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')"
+export GCP_WIF_POOL='fullsend-kind-poc'
+export GCP_WIF_PROVIDER='kind-local'
+export GCP_INFERENCE_SERVICE_ACCOUNT_ID='fullsend-poc-inference'
+export GCP_INFERENCE_SERVICE_ACCOUNT="${GCP_INFERENCE_SERVICE_ACCOUNT_ID}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+gcloud config set project "$GCP_PROJECT_ID"</code></pre>
+              <p>Enable the APIs used for IAM federation and Vertex inference:</p>
+              <pre><code>gcloud services enable \
+  cloudresourcemanager.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  sts.googleapis.com \
+  aiplatform.googleapis.com \
+  --project="$GCP_PROJECT_ID"</code></pre>
+              <p>With the owned kind cluster running, capture its OIDC issuer and public signing keys. The JWKS is public and stays in the ignored local directory.</p>
+              <pre><code>mkdir -p k8s/.local/gcp
+export GCP_K8S_ISSUER="$(kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc get --raw /.well-known/openid-configuration | jq -er .issuer)"
+kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc get --raw /openid/v1/jwks &gt; k8s/.local/gcp/kind-jwks.json</code></pre>
+              <p>Create a dedicated pool and OIDC provider. The provider maps the Kubernetes subject and accepts only the inference ServiceAccount in <code>fullsend-runner</code>.</p>
+              <pre><code>gcloud iam workload-identity-pools create "$GCP_WIF_POOL" \
+  --project="$GCP_PROJECT_ID" --location=global \
+  --display-name="Fullsend kind PoC" \
+  --description="PoC workload identity pool for kind inference"
+
+gcloud iam workload-identity-pools providers create-oidc "$GCP_WIF_PROVIDER" \
+  --project="$GCP_PROJECT_ID" --location=global \
+  --workload-identity-pool="$GCP_WIF_POOL" \
+  --issuer-uri="$GCP_K8S_ISSUER" \
+  --attribute-mapping='google.subject=assertion.sub' \
+  --attribute-condition="assertion['kubernetes.io']['namespace'] == 'fullsend-runner' &amp;&amp; assertion.sub == 'system:serviceaccount:fullsend-runner:runner-inference'" \
+  --jwk-json-path=k8s/.local/gcp/kind-jwks.json</code></pre>
+              <p>Create the inference service account, grant it the Vertex and Service Usage roles, then allow only the projected inference ServiceAccount to impersonate it. These commands create no service-account key.</p>
+              <pre><code>gcloud iam service-accounts create "$GCP_INFERENCE_SERVICE_ACCOUNT_ID" \
+  --project="$GCP_PROJECT_ID" \
+  --display-name="Fullsend kind PoC inference"
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --role=roles/aiplatform.user
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --role=roles/serviceusage.serviceUsageConsumer
+
+gcloud iam service-accounts add-iam-policy-binding "$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --project="$GCP_PROJECT_ID" \
+  --member="principal://iam.googleapis.com/projects/${GCP_PROJECT_NUMBER}/locations/global/workloadIdentityPools/${GCP_WIF_POOL}/subject/system:serviceaccount:fullsend-runner:runner-inference" \
+  --role=roles/iam.workloadIdentityUser</code></pre>
+              <p>These are create-once commands; skip resource creation if you are reusing existing resources. A kind reset rotates signing keys, so refresh the provider's JWKS with step 1 before running the probes.</p>
+            </div>
             <div class="explore-step"><h4>1. Refresh public keys after a kind reset</h4><p>This updates public JWKS to match the current kind issuer; it does not create IAM resources or upload private signing material.</p><pre><code>k8s/kind/10-refresh-inference-wif.sh \
   --project "$GCP_PROJECT_ID" \
   --pool "$GCP_WIF_POOL" \
