@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 
 usage() {
   fail "Usage: $0 --attempt-id ID --old-gateway-label LABEL --acknowledge-deleted-gateway"

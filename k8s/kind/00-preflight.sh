@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 profile_arg "$@"
 for tool in kind kubectl podman go git openssl sha256sum jq; do
   command -v "$tool" >/dev/null || fail "Missing $tool; install it before deploying"

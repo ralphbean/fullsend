@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 profile_arg "$@"
 require_owned
 if [[ ! -f "$LOCAL_DIR/db-password" ]]; then

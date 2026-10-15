@@ -17,6 +17,19 @@ status() {
   if [[ "${NO_EMOJI:-0}" == 1 ]]; then icon=""; fi
   printf '%s %s\n' "$icon" "$*" >&2
 }
+script_start() { status '🔧' "executing k8s/kind/${1##*/}"; }
+checkout_content_hash() {
+  local path
+  (
+    cd "$REPO_ROOT"
+    {
+      git diff HEAD --binary
+      while IFS= read -r -d '' path; do
+        if [[ -f "$path" ]]; then sha256sum -- "$path"; fi
+      done < <(git ls-files --others --exclude-standard -z | sort -z)
+    } | sha256sum | cut -c1-16
+  )
+}
 fail() { status '❌' "$*"; exit 1; }
 k() { kubectl --kubeconfig "$KUBECONFIG_POC" --context "$KIND_CONTEXT" "$@"; }
 require_owned() {
@@ -25,7 +38,7 @@ require_owned() {
   k cluster-info >/dev/null || fail "Dedicated PoC context is unavailable"
 }
 cluster_exists() {
-  podman ps -a --filter "name=^${KIND_NAME}-control-plane$" --format '{{.Names}}' | rg -qx "${KIND_NAME}-control-plane"
+  podman ps -a --filter "name=^${KIND_NAME}-control-plane$" --format '{{.Names}}' | grep -Fxq "${KIND_NAME}-control-plane"
 }
 profile_arg() {
   PROFILE=fixture
@@ -39,7 +52,7 @@ profile_arg() {
 build_gateway_runner() {
   local revision content_hash tag base_runner_image
   revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-  content_hash="$(cd "$REPO_ROOT" && { git diff HEAD --binary; git ls-files --others --exclude-standard | sort | xargs -r sha256sum; } | sha256sum | cut -c1-16)"
+  content_hash="$(checkout_content_hash)"
   tag="${revision:0:12}-${content_hash}"
   GATEWAY_RUNNER_IMAGE="localhost/fullsend-poc-runner:$tag"
   base_runner_image="localhost/fullsend-poc-runner-base:$tag"

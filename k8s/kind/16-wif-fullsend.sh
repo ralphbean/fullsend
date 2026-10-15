@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 
 usage() {
   fail "Usage: $0 --project-number NUMBER --pool POOL --provider PROVIDER --service-account-email EMAIL --vertex-project PROJECT_ID"

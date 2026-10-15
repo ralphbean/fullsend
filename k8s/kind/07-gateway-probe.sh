@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 
 usage() {
   fail "Usage: $0 --gateway-bundle DIR --gateway-name NAME --client-secret-file FILE --sandbox-image IMAGE@sha256:DIGEST"

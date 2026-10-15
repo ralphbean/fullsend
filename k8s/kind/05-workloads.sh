@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 profile_arg "$@"
 [[ "$PROFILE" == fixture ]] || fail 'Use 05-live-workloads.sh for the live profile'
 require_owned

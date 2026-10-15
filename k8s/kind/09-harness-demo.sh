@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 [[ $# -eq 0 ]] || fail "Usage: $0"
 require_owned
 k -n fullsend-runner get secret fullsend-gateway-bundle >/dev/null || fail 'Run 07-gateway-probe.sh once to install the gateway bundle'

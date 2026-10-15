@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 build_only=0
 if [[ "${1:-}" == --build-only ]]; then build_only=1; shift; fi
 profile_arg "$@"
 status '🔧' 'Building control-plane binary from this checkout'
 revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-content_hash="$(cd "$REPO_ROOT" && { git diff HEAD --binary; git ls-files --others --exclude-standard | sort | xargs -r sha256sum; } | sha256sum | cut -c1-16)"
+content_hash="$(checkout_content_hash)"
 tag="${revision:0:12}-${content_hash}"
 printf '%s\n' "$tag" > "$STATE_DIR/image-tag"
 printf 'revision=%s\ncontent_hash=%s\nimage_tag=%s\n' "$revision" "$content_hash" "$tag" > "$STATE_DIR/build.env"

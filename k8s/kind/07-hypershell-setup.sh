@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 HYPERSHELL_HSCTL_COMMIT=c17b8199916b0ee5b5a255d9928b3bd051efdbc9
 
 usage() {

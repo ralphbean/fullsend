@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+script_start "$0"
 
 usage() {
   fail "Usage: $0 --app-id ID --installation-id ID --repository-id ID [--repository-id ID ...] [--dispatcher-repository-id ID] --repository OWNER/REPO --private-key-file FILE"
@@ -48,7 +49,7 @@ repository_ids_json="$(jq -cn '$ARGS.positional | map(tonumber)' --args "${repos
 umask 077
 mkdir -p "$LOCAL_DIR/mint"
 mkdir -p "$LOCAL_DIR/mint/tls"
-tag_input="$(git -C "$REPO_ROOT" rev-parse HEAD)-$(cd "$REPO_ROOT" && { git diff HEAD --binary; git ls-files --others --exclude-standard | sort | xargs -r sha256sum; } | sha256sum | cut -c1-16)"
+tag_input="$(git -C "$REPO_ROOT" rev-parse HEAD)-$(checkout_content_hash)"
 tag="$(printf '%s' "$tag_input" | sha256sum | cut -c1-20)"
 image="localhost/fullsend-k8s-mint:$tag"
 status '🔧' "Building private mint image ($tag)"
