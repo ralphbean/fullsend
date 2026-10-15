@@ -94,7 +94,7 @@ if ! wait_job "$denied_job"; then
 fi
 denied_log="$STATE_DIR/wif-probe-$denied_job.log"
 k -n fullsend-runner logs "job/$denied_job" -c probe > "$denied_log"
-rg -q '^Untrusted ServiceAccount was rejected by Google STS\.$' "$denied_log" \
+grep -Eq '^Untrusted ServiceAccount was rejected by Google STS\.$' "$denied_log" \
   || fail "Wrong-identity check did not record the expected denial: $denied_log"
 
 status '✅' 'The ungranted ServiceAccount was rejected by Google STS, as expected'
@@ -105,9 +105,9 @@ if ! wait_job "$authorized_job"; then
 fi
 authorized_log="$STATE_DIR/wif-probe-$authorized_job.log"
 k -n fullsend-runner logs "job/$authorized_job" -c probe > "$authorized_log"
-rg -q '^WIF inference succeeded before projected-token rotation\.$' "$authorized_log" \
+grep -Eq '^WIF inference succeeded before projected-token rotation\.$' "$authorized_log" \
   || fail "Authorized probe missed its initial inference: $authorized_log"
-rg -q '^WIF inference succeeded after projected-token rotation\.$' "$authorized_log" \
+grep -Eq '^WIF inference succeeded after projected-token rotation\.$' "$authorized_log" \
   || fail "Authorized probe missed its post-rotation inference: $authorized_log"
 
 status '📝' 'Both checks passed; recording a summary without saving tokens or inference credentials'

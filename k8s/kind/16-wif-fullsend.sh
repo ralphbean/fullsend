@@ -126,9 +126,9 @@ log_file="$STATE_DIR/wif-fullsend-$job_name.log"
 status '🔎' 'Checking the runner log for token rotation and validated inference output'
 k -n fullsend-runner logs "job/$job_name" -c runner > "$log_file" 2>&1 || true
 [[ "$result" == complete ]] || fail "Fullsend WIF integration did not complete; inspect $log_file and PVC evidence /evidence/$job_name"
-rg -q '^Fullsend fetched an inference assertion before and after projected-token rotation\.$' "$log_file" \
+grep -Eq '^Fullsend fetched an inference assertion before and after projected-token rotation\.$' "$log_file" \
   || fail "Fullsend refresh did not span assertion rotation; inspect $log_file"
-rg -q '"output_sha256":"[0-9a-f]{64}"' "$log_file" \
+grep -Eq '"output_sha256":"[0-9a-f]{64}"' "$log_file" \
   || fail "Fullsend did not record validated post-rotation inference output; inspect $log_file"
 
 status '📝' 'The end-to-end checks passed; writing a summary with log and PVC evidence locations'
