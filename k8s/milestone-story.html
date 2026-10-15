@@ -134,6 +134,14 @@
     .flow-arrow { flex: 0 0 auto; align-self: center; color: #858c82; font-size: 18px; }
         .dual-flow { display: grid; gap: 10px; }
     .diagram-caption { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+    .explore { margin-top: 25px; padding: 19px 20px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--white); }
+    .explore > h3 { margin: 0 0 16px; font: 600 24px/1.15 var(--serif); }
+    .explore-step { margin: 0 0 18px; }
+    .explore-step h4 { margin: 0 0 5px; font-size: 13px; }
+    .explore-step p { margin: 0 0 9px; color: #4f5a54; font-size: 13px; }
+    .explore pre { max-width: 100%; margin: 9px 0 0; padding: 12px 14px; overflow-x: auto; border: 1px solid #e2ded4; border-radius: 4px; background: #f4f2ec; color: #263833; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+    .explore code { font: inherit; }
+    .explore-note { margin: 0 0 15px !important; padding-left: 12px; border-left: 2px solid var(--amber); }
     .evidence { margin: 20px 0 0; color: var(--muted); font-size: 12px; }
     .evidence a { margin-right: 12px; }
     .chapter-nav { display: flex; justify-content: space-between; gap: 12px; margin-top: 29px; padding-top: 18px; border-top: 1px solid var(--line); }
@@ -229,6 +237,14 @@
           </div>
           <figure><figcaption>One owned local environment</figcaption><div class="flow" role="img" aria-label="This checkout builds pinned images, loads them into an owned kind cluster, applies PostgreSQL with persistent storage, then runs smoke checks."><div class="flow-box">This checkout<small>build + pinned images</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Owned kind cluster<small>dedicated context</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">PostgreSQL PVC<small>survives Pod restart</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Smoke report<small>recorded outcome</small></div></div><p class="diagram-caption">The named cluster is disposable; local inputs and reports stay under ignored <code>k8s/.local/</code> and <code>k8s/.state/</code>.</p></figure>
           <p class="evidence">Source trail: <a href="STATUS.md">dated status and evidence</a><a href="RESULTS.md">fixture results</a></p>
+          <section class="explore" aria-labelledby="explore-title-1">
+            <h3 id="explore-title-1">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Build and smoke the owned fixture cluster</h4><p>From the repository root, deploy the fixture profile. It creates or reuses the named kind cluster, applies the control plane and database, then runs baseline checks.</p><pre><code>k8s/kind/deploy.sh --profile fixture</code></pre></div>
+            <div class="explore-step"><h4>2. Inspect readiness and the report</h4><p>The status command uses the dedicated PoC kubeconfig. The smoke summary records the counts and build/tool metadata.</p><pre><code>k8s/kind/status.sh --profile fixture
+latest_report="$(ls -td k8s/.state/smoke-* | head -1)"
+cat "$latest_report/summary.txt"
+kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control get pvc</code></pre></div>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Introduction</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
@@ -242,6 +258,19 @@
           </div>
           <figure><figcaption>Observe first, reconcile later</figcaption><div class="flow" role="img" aria-label="Fixture poller records observations and checkpoints in PostgreSQL; dispatcher selects and reserves runs; independent stub Jobs report outcomes; a later dispatch cycle reconciles and cleans them up."><div class="flow-box">Fixture poller<small>candidate + checkpoint</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">PostgreSQL<small>observations · runs · attempts</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Dispatcher<small>select + reserve</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Stub Job<small>next cycle observes + cleans</small></div></div><p class="diagram-caption">Independent Jobs outlive the CronJob invocation that launched them; state in PostgreSQL connects the cycles.</p></figure>
           <p class="evidence">Source trail: <a href="PLAN.md">milestone 2 plan</a><a href="STATUS.md">current gaps</a><a href="RESULTS.md">fixture results</a></p>
+          <section class="explore" aria-labelledby="explore-title-2">
+            <h3 id="explore-title-2">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Add a fresh fixture observation</h4><p>This creates UUID-keyed activity and triggers poll and dispatch cycles. It changes the ignored local fixture file, so each invocation adds another sample.</p><pre><code>k8s/kind/inject-observation.sh --profile fixture</code></pre></div>
+            <div class="explore-step"><h4>2. Follow it into its attempt</h4><p>PostgreSQL retains the selected run and cleanup result even after the short-lived runner Job is removed.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -c '
+SELECT o.id, o.observation_key, r.harness, r.execution, r.state,
+       a.job_name, a.outcome, a.cleanup_state
+FROM observations o
+LEFT JOIN selected_runs r ON r.observation_id = o.id
+LEFT JOIN attempts a ON a.run_id = r.id
+ORDER BY o.id DESC, a.number DESC
+LIMIT 8;'</code></pre></div>
+            <p class="explore-note">The state machine makes retries and cleanup visible; it does not promise exactly-once effects.</p>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
@@ -255,6 +284,21 @@
           </div>
           <figure><figcaption>Source data stays on the untrusted side of the decision</figcaption><div class="flow" role="img" aria-label="Jira poller stores an event reference; dispatcher refetches Jira state and actor permissions, applies registered repository configuration and CEL selection, then launches the selected execution path."><div class="flow-box untrusted">Jira event reference<small>not execution policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Refetch issue + actor<small>current source state</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Registered repo + CEL<small>trusted selection</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Selected run<small>stub by default; triage opt-in</small></div></div><p class="diagram-caption">Issue fields cannot choose the namespace, image, role, command, or credential.</p></figure>
           <p class="evidence">Source trail: <a href="LIVE-RESULTS.md">live Jira results</a><a href="STATUS.md">current gaps</a><a href="PLAN.md">milestone 3 plan</a></p>
+          <section class="explore" aria-labelledby="explore-title-3">
+            <h3 id="explore-title-3">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Check the bounded Jira source</h4><p>This displays only the project, label, repository, and execution allowlist, not the token or account files.</p><pre><code>jq '{project, label, repo, fullsend_harnesses}' k8s/.local/live/settings.json</code></pre></div>
+            <div class="explore-step"><h4>2. Run the live poll and selection path</h4><p>With authorized live inputs installed, deploy the profile. By default, selections launch stubs and do not write to Jira.</p><pre><code>k8s/kind/deploy.sh --profile live</code></pre></div>
+            <div class="explore-step"><h4>3. Inspect nominations and selection</h4><p>Compare the issue, harness, execution mode, run state, and cleanup state persisted for each Jira source observation.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -c '
+SELECT o.id, o.entity, o.kind, o.selection_state,
+       r.harness, r.execution, r.state, a.job_name, a.cleanup_state
+FROM observations o
+LEFT JOIN selected_runs r ON r.observation_id = o.id
+LEFT JOIN attempts a ON a.run_id = r.id
+WHERE o.source LIKE $$jira:%$$
+ORDER BY o.id DESC, a.number DESC
+LIMIT 10;'</code></pre></div>
+            <div class="explore-step"><h4>4. Reproduce the controlled real-triage path (opt-in)</h4><p>After the private mint, gateway, and WIF prerequisites are configured, set <code>fullsend_harnesses</code> to <code>["triage"]</code>, add a <code>/fs-triage</code> comment to the controlled stage issue, then trigger one poll and dispatch cycle.</p><pre><code>k8s/kind/06-live-smoke.sh --profile live</code></pre><p class="explore-note">This runs real Fullsend triage, writes the <code>triaged</code> label and response comment to Jira, and can incur Vertex and gateway usage. Use only the controlled stage repository and issue.</p></div>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
@@ -268,6 +312,25 @@
           </div>
           <figure><figcaption>Two workloads, one cleanup gate</figcaption><div class="dual-flow"><div class="flow" role="img" aria-label="Runner Job sends work to the remote HyperShell sandbox and persists validated output."><div class="flow-box">Runner Job<small>trusted Kubernetes workload</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">HyperShell sandbox<small>remote Fullsend execution</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Persistent evidence<small>validated output + hashes</small></div></div><div class="flow" role="img" aria-label="The dispatcher starts an independent cleanup Job, confirms remote absence, then releases the attempt reservation."><div class="flow-box">Dispatcher<small>durable attempt state</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Cleanup Job<small>confirm remote absence</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Release reservation<small>after cleanup evidence</small></div></div></div><p class="diagram-caption">The remote sandbox is not owned by the short-lived runner Pod; cleanup has its own retryable Job and durable evidence.</p></figure>
           <p class="evidence">Source trail: <a href="STATUS.md">gateway results and limitations</a><a href="README.md">gateway setup and recovery</a><a href="PLAN.md">milestone 4 plan</a></p>
+          <section class="explore" aria-labelledby="explore-title-4">
+            <h3 id="explore-title-4">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Probe the dedicated gateway transport</h4><p>With the OIDC gateway registration, mode-600 client secret, and digest-pinned sandbox image prepared, the probe transfers files and verifies remote deletion.</p><pre><code>k8s/kind/07-gateway-probe.sh \
+  --gateway-bundle k8s/.local/gateway/openshell \
+  --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
+  --client-secret-file "k8s/.local/gateway/${HYPERSHELL_GATEWAY_NAME}-fullsend-poc-client-secret" \
+  --sandbox-image "$SANDBOX_IMAGE"</code></pre></div>
+            <div class="explore-step"><h4>2. Send a fixture through dispatch</h4><p>After the probe installs the gateway Secrets, this creates a fixture observation, runs Fullsend, and waits for independent cleanup.</p><pre><code>k8s/kind/11-dispatch-gateway-demo.sh --profile fixture</code></pre></div>
+            <div class="explore-step"><h4>3. Inspect attempt state and Jobs</h4><p>The database is the durable record; runner Jobs may be removed after remote cleanup succeeds.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -c '
+SELECT o.observation_key, r.state, a.job_name, a.outcome, a.cleanup_state
+FROM observations o
+JOIN selected_runs r ON r.observation_id = o.id
+LEFT JOIN attempts a ON a.run_id = r.id
+WHERE r.harness = $$gateway-demo$$
+ORDER BY a.id DESC
+LIMIT 5;'
+kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-runner get jobs,pods</code></pre></div>
+            <p class="explore-note">These commands contact the remote gateway and create sandboxes. Runner Jobs share a gateway administrative credential, and the managed gateway path currently disables TLS verification.</p>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
@@ -281,6 +344,21 @@
           </div>
           <figure><figcaption>Mint identity is separate from launcher authority</figcaption><div class="flow" role="img" aria-label="Runner presents a short-lived, mint-audience Kubernetes assertion to the private mint; the mint validates it and requests a repository- and role-scoped GitHub installation token. The launcher Kubernetes identity does not enter the runner or sandbox."><div class="flow-box">Projected Pod assertion<small>mint audience · short lifetime</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Private mint<small>validates identity + policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">GitHub App token<small>one repository + role</small></div></div><p class="diagram-caption">The launcher creates Jobs; the runner receives only the repository identity needed by its task.</p></figure>
           <p class="evidence">Source trail: <a href="STATUS.md">mint implementation and live evidence</a><a href="README.md">runner identity boundary</a><a href="PLAN.md">milestone 5 plan</a></p>
+          <section class="explore" aria-labelledby="explore-title-5">
+            <h3 id="explore-title-5">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Deploy the private mint for a test repository</h4><p>Export these shell variables from an App installation with access to the repository. Keep the PEM in a private local file; the script mounts it only into the mint Pod.</p><pre><code>k8s/kind/13-deploy-private-mint.sh \
+  --app-id "$GITHUB_APP_ID" \
+  --installation-id "$GITHUB_APP_INSTALLATION_ID" \
+  --repository-id "$GITHUB_REPOSITORY_ID" \
+  --repository "$GITHUB_REPOSITORY" \
+  --private-key-file "$GITHUB_APP_PRIVATE_KEY_FILE"</code></pre></div>
+            <div class="explore-step"><h4>2. Exchange the projected identity and wait for rotation</h4><p>The probe verifies repository and role scope again after kubelet rotates the 600-second token.</p><pre><code>k8s/kind/14-test-private-mint.sh \
+  --repository-id "$GITHUB_REPOSITORY_ID" \
+  --repository "$GITHUB_REPOSITORY"</code></pre></div>
+            <div class="explore-step"><h4>3. Inspect readiness without reading Secrets</h4><p>The probe writes generic outcome evidence under <code>k8s/.state/</code>; tokens and the App PEM are not part of that report.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-mint get deployments,services
+kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-runner get serviceaccounts
+ls -lt k8s/.state | head</code></pre></div>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
@@ -294,6 +372,25 @@
           </div>
           <figure><figcaption>Two credentials, two authorities</figcaption><div class="dual-flow"><div class="flow" role="img" aria-label="Mint-audience token goes to the private mint, which returns a scoped GitHub token."><div class="flow-box">Mint-audience token<small>repository identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Private mint<small>validates identity + policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">GitHub token<small>repository + role scope</small></div></div><div class="flow" role="img" aria-label="A separate inference-audience token goes through Google STS to an authorized inference service account and Vertex."><div class="flow-box">Inference-audience token<small>separate identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Google STS<small>authorized service identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Vertex<small>inference request</small></div></div></div><p class="diagram-caption">For a remote sandbox, only the inference assertion is refreshed across the boundary; the mint assertion and launcher API identity stay out.</p></figure>
           <p class="evidence">Source trail: <a href="STATUS.md">WIF checks and caveats</a><a href="gcp/README.md">JWKS refresh and optional infrastructure</a><a href="PLAN.md">milestone 6 plan</a></p>
+          <section class="explore" aria-labelledby="explore-title-6">
+            <h3 id="explore-title-6">Explore this milestone</h3>
+            <div class="explore-step"><h4>1. Refresh public keys after a kind reset</h4><p>Set the variables in these commands to the existing project, pool, and provider. This updates public JWKS to match the current kind issuer; it does not create IAM resources or upload private signing material.</p><pre><code>k8s/kind/10-refresh-inference-wif.sh \
+  --project "$GCP_PROJECT_ID" \
+  --pool "$GCP_WIF_POOL" \
+  --provider "$GCP_WIF_PROVIDER"</code></pre></div>
+            <div class="explore-step"><h4>2. Check allowed and denied identities</h4><p>With the existing pool, provider, service account, gateway, and runner profile in place, verify wrong-identity denial and Vertex inference across token rotation.</p><pre><code>k8s/kind/15-wif-inference.sh \
+  --project-number "$GCP_PROJECT_NUMBER" --pool "$GCP_WIF_POOL" \
+  --provider "$GCP_WIF_PROVIDER" \
+  --service-account-email "$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --vertex-project "$GCP_PROJECT_ID"</code></pre></div>
+            <div class="explore-step"><h4>3. Repeat through a Fullsend run</h4><p>This starts a remote inference run, observes projected-token rotation, and validates the downloaded result.</p><pre><code>k8s/kind/16-wif-fullsend.sh \
+  --project-number "$GCP_PROJECT_NUMBER" --pool "$GCP_WIF_POOL" \
+  --provider "$GCP_WIF_PROVIDER" \
+  --service-account-email "$GCP_INFERENCE_SERVICE_ACCOUNT" \
+  --vertex-project "$GCP_PROJECT_ID"
+ls -lt k8s/.state | head</code></pre></div>
+            <p class="explore-note">These checks use existing Google Cloud resources and can incur normal Vertex charges. JWKS refresh changes the existing provider, and the Fullsend path also uses the dedicated gateway.</p>
+          </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
 
