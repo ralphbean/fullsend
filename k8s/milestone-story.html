@@ -287,9 +287,30 @@ LIMIT 8;'</code></pre></div>
           <p class="evidence">Source trail: <a href="LIVE-RESULTS.md">live Jira results</a><a href="STATUS.md">current gaps</a><a href="PLAN.md">milestone 3 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-3">
             <h3 id="explore-title-3">Explore this milestone</h3>
-            <div class="explore-step"><h4>1. Check the bounded Jira source</h4><p>This displays only the project, label, repository, and execution allowlist, not the token or account files.</p><pre><code>jq '{project, label, repo, fullsend_harnesses}' k8s/.local/live/settings.json</code></pre></div>
-            <div class="explore-step"><h4>2. Run the live poll and selection path</h4><p>With authorized live inputs installed, deploy the profile. By default, selections launch stubs and do not write to Jira.</p><pre><code>k8s/kind/deploy.sh --profile live</code></pre></div>
-            <div class="explore-step"><h4>3. Inspect nominations and selection</h4><p>Compare the issue, harness, execution mode, run state, and cleanup state persisted for each Jira source observation.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -c '
+            <div class="explore-step"><h4>1. Install the live Jira settings</h4><p>Run this from the repository root to create the ignored local settings file with the real staging Jira project, test label, repository, and harness allowlist. It replaces any existing <code>settings.json</code>; it contains no credentials.</p><pre><code>mkdir -p k8s/.local/live
+cat &gt; k8s/.local/live/settings.json &lt;&lt;'JSON'
+{
+  "jira_base_url": "https://stage-redhat.atlassian.net",
+  "project": "FSENDAI",
+  "label": "fullsend-dispatcher-test",
+  "repo": "ralphbean/jira-triage-test",
+  "fullsend_harnesses": ["triage"]
+}
+JSON</code></pre><p>The allowlist enables the controlled triage path. The next command displays these bounded settings only; it does not show token or account files.</p><pre><code>jq '{project, label, repo, fullsend_harnesses}' k8s/.local/live/settings.json</code></pre></div>
+            <div class="explore-step"><h4>2. Save the Jira credentials locally</h4><p>The live scripts require your Jira API token and the account email associated with it. They read these ignored files (not environment variables). Run this whole block in your terminal; it starts Bash for the prompts, creates the local directory, and writes owner-only files. The token prompt is hidden, so the token is not echoed or included in shell history.</p><pre><code>bash -c '
+set -eu
+mkdir -p k8s/.local/live
+chmod 700 k8s/.local/live
+read -r -p "Jira account email: " jira_email
+read -r -s -p "Jira API token: " jira_token
+printf "\n"
+printf "%s" "$jira_email" &gt; k8s/.local/live/jira-email
+printf "%s" "$jira_token" &gt; k8s/.local/live/jira-token
+chmod 600 k8s/.local/live/jira-email k8s/.local/live/jira-token
+'
+</code></pre><p>Both files are required before deployment. Do not paste the token into the settings JSON or the story.</p></div>
+            <div class="explore-step"><h4>3. Run the live poll and selection path</h4><p>With the local settings and credentials in place, deploy the profile. Ordinary selections launch stubs; the triage harness runs only for the controlled opt-in path below.</p><pre><code>k8s/kind/deploy.sh --profile live</code></pre></div>
+            <div class="explore-step"><h4>4. Inspect nominations and selection</h4><p>Compare the issue, harness, execution mode, run state, and cleanup state persisted for each Jira source observation.</p><pre><code>kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullsend-control exec statefulset/postgres -- psql -U fullsend -d fullsend -c '
 SELECT o.id, o.entity, o.kind, o.selection_state,
        r.harness, r.execution, r.state, a.job_name, a.cleanup_state
 FROM observations o
@@ -298,7 +319,7 @@ LEFT JOIN attempts a ON a.run_id = r.id
 WHERE o.source LIKE $$jira:%$$
 ORDER BY o.id DESC, a.number DESC
 LIMIT 10;'</code></pre></div>
-            <div class="explore-step"><h4>4. Reproduce the controlled real-triage path (opt-in)</h4><p>First create and install the GitHub App described in chapter 4, then configure the private mint, gateway, and WIF prerequisites. Set <code>fullsend_harnesses</code> to <code>["triage"]</code>, add a <code>/fs-triage</code> comment to the controlled stage issue, then trigger one poll and dispatch cycle.</p><pre><code>k8s/kind/06-live-smoke.sh --profile live</code></pre><p class="explore-note">This runs real Fullsend triage, writes the <code>triaged</code> label and response comment to Jira, and can incur Vertex and gateway usage. Use only the controlled stage repository and issue.</p></div>
+            <div class="explore-step"><h4>5. Reproduce the controlled real-triage path (opt-in)</h4><p>First create and install the GitHub App described in chapter 5, then configure the private mint, gateway, and WIF prerequisites. The settings above allowlist <code>triage</code>. Add a <code>/fs-triage</code> comment to the controlled stage issue, then trigger one poll and dispatch cycle.</p><pre><code>k8s/kind/06-live-smoke.sh --profile live</code></pre><p class="explore-note">This runs real Fullsend triage, writes the <code>triaged</code> label and response comment to Jira, and can incur Vertex and gateway usage. Use only the controlled stage repository and issue.</p></div>
           </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
@@ -322,11 +343,6 @@ export SANDBOX_IMAGE='ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea32135
   --gateway-request k8s/.local/gateway/request.json \
   --cluster-name "$HYPERSHELL_CLUSTER_NAME" \
   --service-account-name fullsend-poc</code></pre></div>
-            <div class="explore-step" id="github-app-prereq"><h4>Additional prerequisite for real triage: create and install a GitHub App</h4><p>This is not needed for the gateway probe or fixture demo. It is needed for the opt-in live triage path in chapter 3 and the repository identity walkthrough in chapter 5. Create a private app under your personal GitHub account from <a href="https://github.com/settings/apps/new">New GitHub App</a>; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app">registration guide</a>. Grant repository <strong>Contents: read-only</strong> and <strong>Issues: read and write</strong>; Metadata read is enabled by default. This PoC does not use GitHub App webhook events.</p><p>Choose <em>Install App</em> and install it on only the repository you own that is configured for the live profile. The current example is <code>ralphbean/jira-triage-test</code>; if you use a different repository, update the live repo configuration and mint allowlist to match. GitHub's <a href="https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app">installation guide</a> describes the flow.</p><p>Find <code>GITHUB_APP_ID</code> on the app's <em>General</em> settings page. Find <code>GITHUB_APP_INSTALLATION_ID</code> at the end of the installation's <em>Configure</em> page URL under account Settings → Applications → Installed GitHub Apps. Use the repository's <code>OWNER/REPOSITORY</code> for <code>GITHUB_REPOSITORY</code>. Generate and download a PEM from the app's <em>Private keys</em> settings, then set <code>GITHUB_APP_PRIVATE_KEY_FILE</code> to its local path. Keep the PEM private and out of the repository; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps">private key guide</a>.</p><p>With <code>gh</code> authenticated for that repository, read its immutable numeric ID and set the variables used by chapters 3 and 5:</p><pre><code>export GITHUB_APP_ID='APP_ID_FROM_GENERAL_SETTINGS'
-export GITHUB_APP_INSTALLATION_ID='ID_AT_END_OF_INSTALLATION_URL'
-export GITHUB_REPOSITORY='OWNER/REPOSITORY'
-export GITHUB_REPOSITORY_ID="$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)"
-export GITHUB_APP_PRIVATE_KEY_FILE="$HOME/path/to/downloaded-private-key.pem"</code></pre></div>
             <div class="explore-step"><h4>1. Probe the dedicated gateway transport</h4><p>With the OIDC gateway registration, mode-600 client secret, and digest-pinned sandbox image prepared, the probe transfers files and verifies remote deletion.</p><pre><code>k8s/kind/07-gateway-probe.sh \
   --gateway-bundle k8s/.local/gateway/openshell \
   --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
@@ -359,11 +375,18 @@ kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullse
           <p class="evidence">Source trail: <a href="STATUS.md">mint implementation and live evidence</a><a href="README.md">runner identity boundary</a><a href="PLAN.md">milestone 5 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-5">
             <h3 id="explore-title-5">Explore this milestone</h3>
-            <div class="explore-step"><h4>Before you start: set the repository App variables</h4><p>Replace these placeholders with values from a GitHub App installation that can access your test repository. Keep the PEM in a private local file; the script mounts it only into the mint Pod.</p><pre><code>export GITHUB_APP_ID='YOUR_APP_ID'
-export GITHUB_APP_INSTALLATION_ID='YOUR_INSTALLATION_ID'
-export GITHUB_REPOSITORY_ID='YOUR_NUMERIC_REPOSITORY_ID'
+            <div class="explore-step" id="github-app-prereq">
+              <h4>Prerequisite: create and install a GitHub App</h4>
+              <p>The App is required for this milestone's private mint and for the optional real-triage path in chapter 3; it is not needed for milestone 4's gateway probe or fixture demo. Create a private app under your personal GitHub account from <a href="https://github.com/settings/apps/new">New GitHub App</a>; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app">registration guide</a>. Grant repository <strong>Contents: read-only</strong> and <strong>Issues: read and write</strong>; Metadata read is enabled by default. This PoC does not use GitHub App webhook events.</p>
+              <p>Choose <em>Install App</em> and install it on only the repository you own that is configured for the live profile. The current example is <code>ralphbean/jira-triage-test</code>; if you use a different repository, update the live repo configuration and mint allowlist to match. GitHub's <a href="https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app">installation guide</a> describes the flow.</p>
+              <p>Find <code>GITHUB_APP_ID</code> on the app's <em>General</em> settings page. Find <code>GITHUB_APP_INSTALLATION_ID</code> at the end of the installation's <em>Configure</em> page URL under account Settings → Applications → Installed GitHub Apps. Use the repository's <code>OWNER/REPOSITORY</code> for <code>GITHUB_REPOSITORY</code>. Generate and download a PEM from the app's <em>Private keys</em> settings, then set <code>GITHUB_APP_PRIVATE_KEY_FILE</code> to its local path. Keep the PEM private and out of the repository; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps">private key guide</a>.</p>
+              <p>With <code>gh</code> authenticated for that repository, read its immutable numeric ID and export these values for the commands below. The numeric repository ID is derived from GitHub; it is not the App ID.</p>
+              <pre><code>export GITHUB_APP_ID='APP_ID_FROM_GENERAL_SETTINGS'
+export GITHUB_APP_INSTALLATION_ID='ID_AT_END_OF_INSTALLATION_URL'
 export GITHUB_REPOSITORY='OWNER/REPOSITORY'
-export GITHUB_APP_PRIVATE_KEY_FILE="$HOME/path/to/private-key.pem"</code></pre></div>
+export GITHUB_REPOSITORY_ID="$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)"
+export GITHUB_APP_PRIVATE_KEY_FILE="$HOME/path/to/downloaded-private-key.pem"</code></pre>
+            </div>
             <div class="explore-step"><h4>1. Deploy the private mint for a test repository</h4><pre><code>k8s/kind/13-deploy-private-mint.sh \
   --app-id "$GITHUB_APP_ID" \
   --installation-id "$GITHUB_APP_INSTALLATION_ID" \
