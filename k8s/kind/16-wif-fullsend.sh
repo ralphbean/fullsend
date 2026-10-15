@@ -31,6 +31,7 @@ k -n fullsend-runner get serviceaccount runner-inference >/dev/null || fail 'Inf
 k -n fullsend-runner get secret fullsend-gateway-bundle >/dev/null || fail 'Run 07-gateway-probe.sh to install the gateway connection bundle'
 k -n fullsend-runner get secret fullsend-gateway-auth >/dev/null || fail 'Gateway service-account Secret is missing'
 
+status '🔐' 'Preparing keyless Google credentials for the inference ServiceAccount'
 umask 077
 mkdir -p "$LOCAL_DIR/gcp"
 build_gateway_runner
@@ -47,14 +48,18 @@ restore_dispatcher() {
   rm -f "$archive"
   if [[ -n "$manifest" ]]; then rm -f "$manifest"; fi
   if [[ -n "$suspended" ]]; then
+    status '🔄' 'Restoring the fixture dispatcher schedule'
     k -n fullsend-control patch cronjob fixture-dispatcher --type merge \
       -p "{\"spec\":{\"suspend\":$suspended}}" >/dev/null || true
   fi
 }
 trap restore_dispatcher EXIT
+
+status '⏸️' 'Pausing the fixture dispatcher so it cannot overlap with this demonstration run'
 suspended="$(k -n fullsend-control get cronjob fixture-dispatcher -o jsonpath='{.spec.suspend}')"
 k -n fullsend-control patch cronjob fixture-dispatcher --type merge -p '{"spec":{"suspend":true}}' >/dev/null
 
+status '📦' 'Packaging the inference demo and preparing the WIF and gateway configuration for the Job'
 tar -C "$K8S_ROOT/fixtures/inference-demo" -czf "$archive" .fullsend repo
 k -n fullsend-runner create configmap fullsend-gateway-demo \
   --from-file="bundle.tgz=$archive" --dry-run=client -o json | k apply -f - >/dev/null
@@ -99,8 +104,10 @@ jq --arg job "$job_name" --arg audience "$audience" --arg vertex_project "$verte
   ]
 ' "$manifest" > "$manifest.tmp"
 mv "$manifest.tmp" "$manifest"
+
+status '🚀' 'Starting the real Fullsend gateway demo with a projected Kubernetes identity token'
 k create -f "$manifest" >/dev/null
-status '⏳' "Running Fullsend through HyperShell across WIF token rotation (Job $job_name; may take about 15 minutes)"
+status '⏳' "Waiting for Fullsend and HyperShell to complete inference before and after token rotation (Job $job_name; up to about 15 minutes)"
 
 deadline=$((SECONDS + 1850))
 result=''
@@ -116,6 +123,7 @@ while (( SECONDS < deadline )); do
   sleep 10
 done
 log_file="$STATE_DIR/wif-fullsend-$job_name.log"
+status '🔎' 'Checking the runner log for token rotation and validated inference output'
 k -n fullsend-runner logs "job/$job_name" -c runner > "$log_file" 2>&1 || true
 [[ "$result" == complete ]] || fail "Fullsend WIF integration did not complete; inspect $log_file and PVC evidence /evidence/$job_name"
 rg -q '^Fullsend fetched an inference assertion before and after projected-token rotation\.$' "$log_file" \
@@ -123,6 +131,7 @@ rg -q '^Fullsend fetched an inference assertion before and after projected-token
 rg -q '"output_sha256":"[0-9a-f]{64}"' "$log_file" \
   || fail "Fullsend did not record validated post-rotation inference output; inspect $log_file"
 
+status '📝' 'The end-to-end checks passed; writing a summary with log and PVC evidence locations'
 report="$STATE_DIR/milestone-6-fullsend-$job_name.md"
 cat > "$report" <<EOF
 # Milestone 6 Fullsend WIF integration
@@ -134,6 +143,7 @@ cat > "$report" <<EOF
 - Runner log: $log_file.
 - PVC evidence: /evidence/$job_name.
 EOF
+status '🧹' 'Removing the temporary demo Job and its configuration'
 k -n fullsend-runner delete job "$job_name" --wait=true >/dev/null
 k -n fullsend-runner delete configmap fullsend-wif-fullsend fullsend-gateway-demo --ignore-not-found >/dev/null
-status '✅' "Fullsend/HyperShell WIF inference completed across token rotation. Report: $report"
+status '✅' "Fullsend completed inference across token rotation. Temporary resources are removed; dispatcher schedule restoration runs during exit cleanup. Summary: $report"

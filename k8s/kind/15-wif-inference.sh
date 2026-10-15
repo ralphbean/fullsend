@@ -30,6 +30,7 @@ for tool in jq podman; do command -v "$tool" >/dev/null || fail "Missing $tool";
 k -n fullsend-runner get serviceaccount runner >/dev/null || fail 'Runner namespace is missing'
 k -n fullsend-runner get serviceaccount runner-inference >/dev/null || fail 'Inference ServiceAccount is missing'
 
+status '🔐' 'Preparing keyless Google credentials that use short-lived tokens from Kubernetes'
 umask 077
 mkdir -p "$LOCAL_DIR/gcp"
 build_gateway_runner
@@ -82,10 +83,11 @@ wait_job() {
 
 denied_manifest="$LOCAL_DIR/gcp/$denied_job.json"
 authorized_manifest="$LOCAL_DIR/gcp/$authorized_job.json"
+status '🧪' 'Starting two checks: an ungranted identity should be rejected, and the inference identity should work'
 render_job "$denied_job" runner expect-denied "$denied_manifest"
 render_job "$authorized_job" runner-inference authorize-and-rotate "$authorized_manifest"
 
-status '⏳' "Checking that an ungranted ServiceAccount is denied (Job $denied_job)"
+status '⏳' "Proving Google rejects the ungranted runner ServiceAccount (Job $denied_job)"
 if ! wait_job "$denied_job"; then
   k -n fullsend-runner logs "job/$denied_job" -c probe > "$STATE_DIR/wif-probe-$denied_job.log" 2>&1 || true
   fail "Wrong-identity check failed; redacted probe output: $STATE_DIR/wif-probe-$denied_job.log"
@@ -95,7 +97,8 @@ k -n fullsend-runner logs "job/$denied_job" -c probe > "$denied_log"
 rg -q '^Untrusted ServiceAccount was rejected by Google STS\.$' "$denied_log" \
   || fail "Wrong-identity check did not record the expected denial: $denied_log"
 
-status '⏳' "Checking Vertex inference before and after projected-token rotation (Job $authorized_job)"
+status '✅' 'The ungranted ServiceAccount was rejected by Google STS, as expected'
+status '⏳' "Proving runner-inference can call Vertex before and after Kubernetes rotates its token (Job $authorized_job)"
 if ! wait_job "$authorized_job"; then
   k -n fullsend-runner logs "job/$authorized_job" -c probe > "$STATE_DIR/wif-probe-$authorized_job.log" 2>&1 || true
   fail "Authorized WIF check failed; redacted probe output: $STATE_DIR/wif-probe-$authorized_job.log"
@@ -107,6 +110,7 @@ rg -q '^WIF inference succeeded before projected-token rotation\.$' "$authorized
 rg -q '^WIF inference succeeded after projected-token rotation\.$' "$authorized_log" \
   || fail "Authorized probe missed its post-rotation inference: $authorized_log"
 
+status '📝' 'Both checks passed; recording a summary without saving tokens or inference credentials'
 report="$STATE_DIR/milestone-6-wif-$(date -u +%Y%m%dT%H%M%SZ).md"
 cat > "$report" <<EOF
 # Milestone 6 WIF probe
@@ -116,6 +120,7 @@ cat > "$report" <<EOF
 - Assertions, access tokens, and inference service-account credentials were not written to this report.
 - Probe Job logs: \`$denied_log\`, \`$authorized_log\`.
 EOF
+status '🧹' 'Removing the temporary probe Jobs and credential ConfigMap'
 k -n fullsend-runner delete job "$denied_job" "$authorized_job" --wait=true >/dev/null
 k -n fullsend-runner delete configmap "$configmap_name" --ignore-not-found >/dev/null
-status '✅' "Wrong identity denied; authorized inference succeeded across token rotation. Report: $report"
+status '✅' "Expected denial and successful inference across token rotation confirmed. Summary: $report"

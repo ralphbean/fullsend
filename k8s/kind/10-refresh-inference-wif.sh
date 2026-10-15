@@ -28,6 +28,7 @@ fi
 require_owned
 for tool in gcloud jq; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
 
+status '🔎' 'Checking that the existing Google WIF provider is active and trusts this kind cluster'
 args=(--project="$project")
 if [[ -n "$token_file" ]]; then args+=(--access-token-file="$token_file"); fi
 issuer="$(k get --raw /.well-known/openid-configuration | jq -er '.issuer | select(type == "string" and length > 0)')"
@@ -36,6 +37,7 @@ details="$(gcloud "${args[@]}" iam workload-identity-pools providers describe "$
 jq -e --arg issuer "$issuer" '.state == "ACTIVE" and .oidc.issuerUri == $issuer' <<<"$details" >/dev/null \
   || fail 'WIF provider is inactive or has a different Kubernetes issuer'
 
+status '🔐' 'Reading the cluster signing keys and confirming the JWKS contains public keys only'
 umask 077
 mkdir -p "$LOCAL_DIR/gcp"
 jwks_file="$LOCAL_DIR/gcp/kind-jwks.json"
@@ -45,6 +47,8 @@ k get --raw /openid/v1/jwks > "$stage"
 jq -e '.keys | type == "array" and length > 0 and all(.[]; has("d") | not)' "$stage" >/dev/null \
   || fail 'Cluster JWKS is empty or contains a private key'
 mv -f "$stage" "$jwks_file"
+
+status '☁️' 'Updating the existing Google WIF provider with the cluster public keys'
 gcloud "${args[@]}" iam workload-identity-pools providers update-oidc "$provider" \
   --workload-identity-pool="$pool" --location=global --jwk-json-path="$jwks_file" >/dev/null
-status '✅' 'Uploaded the current kind public JWKS to the existing WIF provider'
+status '✅' 'Google can now verify tokens signed by this kind cluster; no private signing key was uploaded'
