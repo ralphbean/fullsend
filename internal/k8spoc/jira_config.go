@@ -41,6 +41,11 @@ func PrepareLiveConfig(ctx context.Context, manifestPath, repoDir, repoSlug, jir
 		return err
 	}
 	selection := LiveConfig{JiraBaseURL: jiraURL, Project: project, Label: label, Repo: repoSlug}
+	selection.FullsendHarnesses = splitConfigList(os.Getenv("K8S_POC_FULLSEND_HARNESSES"))
+	selection.RepoBundle = os.Getenv("K8S_POC_REPO_BUNDLE")
+	selection.RepoRevision = os.Getenv("K8S_POC_REPO_REVISION")
+	selection.GCPAudience = os.Getenv("K8S_POC_GCP_AUDIENCE")
+	selection.VertexProject = os.Getenv("K8S_POC_VERTEX_PROJECT")
 	for _, candidate := range candidates {
 		selection.Harnesses = append(selection.Harnesses, LiveHarness{
 			Name: candidate.Name, Role: candidate.Harness.Role, Trigger: candidate.Harness.Trigger,
@@ -54,4 +59,15 @@ func PrepareLiveConfig(ctx context.Context, manifestPath, repoDir, repoSlug, jir
 		return err
 	}
 	return os.WriteFile(outputPath, append(b, '\n'), 0o600)
+}
+
+func splitConfigList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }

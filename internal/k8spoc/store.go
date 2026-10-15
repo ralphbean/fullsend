@@ -71,14 +71,24 @@ func Migrate(ctx context.Context) error {
 	if err != nil && err != pgx.ErrNoRows {
 		return err
 	}
-	if version > 1 {
+	if version > 2 {
 		return fmt.Errorf("unsupported schema version %d", version)
 	}
 	if version == 0 {
 		if _, err = tx.Exec(ctx, string(b)); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, "INSERT INTO schema_versions(version) VALUES(1)"); err != nil {
+		if _, err = tx.Exec(ctx, "INSERT INTO schema_versions(version) VALUES(2)"); err != nil {
+			return err
+		}
+	} else if version == 1 {
+		if _, err = tx.Exec(ctx, `ALTER TABLE selected_runs ADD COLUMN IF NOT EXISTS execution text NOT NULL DEFAULT 'stub'`); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `ALTER TABLE selected_runs ADD COLUMN IF NOT EXISTS event_payload jsonb NOT NULL DEFAULT '{}'::jsonb`); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE schema_versions SET version=2`); err != nil {
 			return err
 		}
 	}
@@ -194,11 +204,13 @@ func selectPending(ctx context.Context, conn *pgx.Conn) error {
 type attempt struct {
 	id, runID                                                   int64
 	name, uid, state, behavior, tenant, source, entity, harness string
+	execution                                                   string
+	eventPayload, configContent                                 []byte
 }
 
 func activeAttempts(ctx context.Context, conn *pgx.Conn) ([]attempt, error) {
-	rows, err := conn.Query(ctx, `SELECT a.id,a.run_id,a.job_name,a.job_uid,a.state,o.behavior,o.tenant,o.source,o.entity,r.harness
-		FROM attempts a JOIN selected_runs r ON r.id=a.run_id JOIN observations o ON o.id=r.observation_id
+	rows, err := conn.Query(ctx, `SELECT a.id,a.run_id,a.job_name,a.job_uid,a.state,o.behavior,o.tenant,o.source,o.entity,r.harness,r.execution,r.event_payload,c.content
+		FROM attempts a JOIN selected_runs r ON r.id=a.run_id JOIN observations o ON o.id=r.observation_id JOIN config_revisions c ON c.digest=o.config_digest
 		WHERE a.state IN ('creating','active','cleanup') ORDER BY a.id LIMIT 50`)
 	if err != nil {
 		return nil, err
@@ -207,7 +219,7 @@ func activeAttempts(ctx context.Context, conn *pgx.Conn) ([]attempt, error) {
 	var out []attempt
 	for rows.Next() {
 		var a attempt
-		if err = rows.Scan(&a.id, &a.runID, &a.name, &a.uid, &a.state, &a.behavior, &a.tenant, &a.source, &a.entity, &a.harness); err != nil {
+		if err = rows.Scan(&a.id, &a.runID, &a.name, &a.uid, &a.state, &a.behavior, &a.tenant, &a.source, &a.entity, &a.harness, &a.execution, &a.eventPayload, &a.configContent); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -231,14 +243,14 @@ func reserve(ctx context.Context, conn *pgx.Conn, capGlobal, capTenant int) (*at
 	if global >= capGlobal {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT r.id,o.tenant,o.source,o.entity,o.behavior,r.harness FROM selected_runs r JOIN observations o ON o.id=r.observation_id WHERE r.state='waiting' ORDER BY r.id LIMIT 50`)
+	rows, err := tx.Query(ctx, `SELECT r.id,o.tenant,o.source,o.entity,o.behavior,r.harness,r.execution,r.event_payload,c.content FROM selected_runs r JOIN observations o ON o.id=r.observation_id JOIN config_revisions c ON c.digest=o.config_digest WHERE r.state='waiting' ORDER BY r.id LIMIT 50`)
 	if err != nil {
 		return nil, err
 	}
 	var waiting []attempt
 	for rows.Next() {
 		var a attempt
-		if err = rows.Scan(&a.runID, &a.tenant, &a.source, &a.entity, &a.behavior, &a.harness); err != nil {
+		if err = rows.Scan(&a.runID, &a.tenant, &a.source, &a.entity, &a.behavior, &a.harness, &a.execution, &a.eventPayload, &a.configContent); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -331,7 +343,7 @@ func Cancel(ctx context.Context, runID int64) error {
 	tag, err := conn.Exec(ctx, `UPDATE attempts a SET state='cleanup',outcome='failed'
 		FROM selected_runs r JOIN observations o ON o.id=r.observation_id
 		WHERE a.run_id=r.id AND r.id=$1 AND r.state='reserved'
-		AND r.harness='gateway-demo' AND o.source='fixture-source'
+		AND ((r.harness='gateway-demo' AND o.source='fixture-source') OR (r.harness='triage' AND r.execution='fullsend' AND o.source LIKE 'jira:%'))
 		AND a.state='active'`, runID)
 	if err != nil {
 		return err

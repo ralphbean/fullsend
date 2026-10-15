@@ -177,10 +177,24 @@ func selectJiraCandidate(ctx context.Context, conn *pgx.Conn, client jirapoll.Ji
 	if len(matches) == 0 {
 		return markSelection(ctx, conn, candidate.id, "no_match", "", nil)
 	}
-	return markSelection(ctx, conn, candidate.id, "selected", "", matches)
+	eventPayload, err := json.Marshal(eventMap)
+	if err != nil {
+		return markSelection(ctx, conn, candidate.id, "evaluation_error", err.Error(), nil)
+	}
+	if len(eventPayload) > 16*1024 {
+		return markSelection(ctx, conn, candidate.id, "evaluation_error", "normalized Jira event exceeds 16 KiB", nil)
+	}
+	return markSelectionWithEvent(ctx, conn, candidate.id, "selected", "", matches, eventPayload, cfg.FullsendHarnesses)
 }
 
 func markSelection(ctx context.Context, conn *pgx.Conn, id int64, state, detail string, names []string) error {
+	return markSelectionWithEvent(ctx, conn, id, state, detail, names, nil, nil)
+}
+
+func markSelectionWithEvent(ctx context.Context, conn *pgx.Conn, id int64, state, detail string, names []string, eventPayload []byte, fullsendHarnesses []string) error {
+	if len(eventPayload) == 0 {
+		eventPayload = []byte(`{}`)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -194,7 +208,11 @@ func markSelection(ctx context.Context, conn *pgx.Conn, id int64, state, detail 
 		return tx.Commit(ctx)
 	}
 	for _, name := range names {
-		if _, err = tx.Exec(ctx, `INSERT INTO selected_runs(observation_id,harness) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, name); err != nil {
+		execution := "stub"
+		if slices.Contains(fullsendHarnesses, name) {
+			execution = "fullsend"
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO selected_runs(observation_id,harness,execution,event_payload) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, id, name, execution, eventPayload); err != nil {
 			return err
 		}
 	}

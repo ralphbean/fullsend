@@ -31,4 +31,4 @@ This note maps the Features and Initiatives under [AISDLC-37, Centralizing on Op
 
 ## Current implementation boundary
 
-The docs describe a local kind PoC. Milestones 1–3 cover the cluster skeleton, durable fixture loop, and live Jira selection. Milestone 4 has manual HyperShell `fullsend run` evidence, while the Jira dispatcher still launches stubs. Milestone 5's private Kubernetes-identity mint and Milestone 6's GCP WIF inference path are verified on kind. The results do not establish OpenShift compatibility, production tenant isolation, active-active operation, or successful dispatcher-to-real-run integration.
+The docs describe a local kind PoC. Milestones 1–3 cover the cluster skeleton, durable fixture loop, and live Jira selection; milestone 4 adds manual HyperShell `fullsend run` evidence. The opt-in Jira-to-Fullsend path passed controlled stage acceptance on 2026-10-09: project-role authorization succeeded, a real triage run wrote back to the test issue, and independent cleanup was confirmed before releasing the reservation. The results do not establish OpenShift compatibility, production tenant isolation, or active-active operation.

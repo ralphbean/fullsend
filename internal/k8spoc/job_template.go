@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 var jobNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
@@ -143,6 +146,94 @@ func GatewayAttemptMintJob(name, runnerImage string, attemptID, repositoryID int
 	})
 }
 
+// GatewayJiraTriageAttemptJob renders the explicitly opted-in real Jira
+// harness Job. Its repository, normalized event, and cloud identity come from
+// the immutable live config and selected run, never from Jira-controlled spec.
+func GatewayJiraTriageAttemptJob(a attempt, runnerImage string, repositoryID int64) ([]byte, error) {
+	if _, err := attemptSandboxName(a.name); err != nil || a.id < 1 || repositoryID < 1 || a.harness != "triage" || a.execution != "fullsend" || !strings.HasPrefix(a.source, "jira:") {
+		return nil, fmt.Errorf("valid opted-in Jira triage attempt is required")
+	}
+	var cfg LiveConfig
+	if err := json.Unmarshal(a.configContent, &cfg); err != nil {
+		return nil, fmt.Errorf("decode live config: %w", err)
+	}
+	if err := cfg.validate(); err != nil || !slices.Contains(cfg.FullsendHarnesses, a.harness) {
+		return nil, fmt.Errorf("live config does not authorize real triage execution")
+	}
+	if len(a.eventPayload) == 0 || len(a.eventPayload) > 16*1024 || !json.Valid(a.eventPayload) {
+		return nil, fmt.Errorf("normalized Jira event payload is missing or invalid")
+	}
+	var event normevent.Event
+	if err := json.Unmarshal(a.eventPayload, &event); err != nil {
+		return nil, fmt.Errorf("decode normalized Jira event: %w", err)
+	}
+	if err := event.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid normalized Jira event: %w", err)
+	}
+	if event.Source.System != normevent.SystemJira || !strings.HasPrefix(event.Entity.Key, cfg.Project+"-") ||
+		event.Entity.URL != strings.TrimRight(cfg.JiraBaseURL, "/")+"/browse/"+event.Entity.Key {
+		return nil, fmt.Errorf("normalized Jira event URL does not match the configured project")
+	}
+	sandboxName, _ := attemptSandboxName(a.name)
+	jobBytes, err := gatewayRunnerJob(a.name, runnerImage, "demo", []string{
+		"/wif-runtime/run-live-fullsend.sh", "/usr/local/bin/fullsend", "run", "triage",
+		"--fullsend-dir", "/repo/.fullsend", "--target-repo", "/repo", "--event-file", "/event/event.json",
+		"--output-dir", "/evidence/" + a.name + "/runs", "--sandbox-name", sandboxName, "--keep-sandbox",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var job map[string]any
+	if err := json.Unmarshal(jobBytes, &job); err != nil {
+		return nil, err
+	}
+	job["metadata"].(map[string]any)["labels"].(map[string]any)["fullsend.ai/attempt"] = fmt.Sprint(a.id)
+	pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	container := pod["containers"].([]any)[0].(map[string]any)
+	pod["serviceAccountName"] = "runner-inference"
+	job["spec"].(map[string]any)["activeDeadlineSeconds"] = 2400
+	container["env"] = append(container["env"].([]any),
+		map[string]any{"name": "WIF_JOB_NAME", "value": a.name},
+		map[string]any{"name": "FULLSEND_SANDBOX_NAME", "value": sandboxName},
+		map[string]any{"name": "GOOGLE_APPLICATION_CREDENTIALS", "value": "/wif/credential.json"},
+		map[string]any{"name": "GCP_OIDC_TOKEN_FILE", "value": "/var/run/fullsend/wif/token"},
+		map[string]any{"name": "FULLSEND_GCP_OIDC_URL", "value": "http://127.0.0.1:18765/token"},
+		map[string]any{"name": "FULLSEND_GCP_OIDC_AUTH_FILE", "value": "/tmp/wif-auth"},
+		map[string]any{"name": "ANTHROPIC_VERTEX_PROJECT_ID", "value": cfg.VertexProject},
+		map[string]any{"name": "CLOUD_ML_REGION", "value": "global"},
+		map[string]any{"name": "FULLSEND_WORK_ITEM_URL", "value": event.Entity.URL},
+		map[string]any{"name": "JIRA_BASE_URL", "value": cfg.JiraBaseURL},
+		map[string]any{"name": "JIRA_USER_EMAIL", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "jira-live-auth", "key": "email"}}},
+		map[string]any{"name": "JIRA_TOKEN", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "jira-live-auth", "key": "token"}}},
+	)
+	volumes := pod["volumes"].([]any)
+	volumes = append(volumes,
+		map[string]any{"name": "repo-bundle", "configMap": map[string]any{"name": cfg.RepoBundle}},
+		map[string]any{"name": "repo", "emptyDir": map[string]any{}},
+		map[string]any{"name": "event", "configMap": map[string]any{"name": "fullsend-event-" + fmt.Sprint(a.runID), "defaultMode": 288}},
+		map[string]any{"name": "wif-config", "configMap": map[string]any{"name": "fullsend-wif-fullsend"}},
+		map[string]any{"name": "wif-runtime", "configMap": map[string]any{"name": "fullsend-live-runtime", "defaultMode": 365}},
+		map[string]any{"name": "wif-token", "projected": map[string]any{"sources": []any{map[string]any{"serviceAccountToken": map[string]any{"path": "token", "audience": cfg.GCPAudience, "expirationSeconds": 600}}}}},
+	)
+	pod["volumes"] = volumes
+	container["volumeMounts"] = append(container["volumeMounts"].([]any),
+		map[string]any{"name": "repo", "mountPath": "/repo"},
+		map[string]any{"name": "event", "mountPath": "/event", "readOnly": true},
+		map[string]any{"name": "wif-config", "mountPath": "/wif", "readOnly": true},
+		map[string]any{"name": "wif-runtime", "mountPath": "/wif-runtime", "readOnly": true},
+		map[string]any{"name": "wif-token", "mountPath": "/var/run/fullsend/wif", "readOnly": true},
+	)
+	init := restrictedContainer("repo-config", runnerImage,
+		[]string{"sh", "-ec", "tar --no-same-owner --no-same-permissions --no-overwrite-dir --touch -xzf /repo-bundle/bundle.tgz -C /repo && git -c safe.directory=/repo -C /repo init -q && git -c safe.directory=/repo -C /repo add -A && git -c safe.directory=/repo -C /repo -c user.name=fullsend-stage -c user.email=fullsend-stage@example.invalid commit -qm 'Stage Jira triage input'"},
+		"10m", "32Mi", "100m", "128Mi")
+	init["volumeMounts"] = []any{map[string]any{"name": "repo-bundle", "mountPath": "/repo-bundle", "readOnly": true}, map[string]any{"name": "repo", "mountPath": "/repo"}}
+	pod["initContainers"] = append(pod["initContainers"].([]any), init)
+	if err := applyMintJobIdentity(pod, container, mintJobIdentity{repositoryID: repositoryID, role: gatewayDemoRole, mintURL: kubernetesMintServiceURL}); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(job, "", "  ")
+}
+
 func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64, identity *mintJobIdentity) ([]byte, error) {
 	jobBytes, err := gatewayRunnerJob(name, runnerImage, "demo", []string{
 		"/usr/local/bin/fullsend", "k8s-poc", "gateway-demo",
@@ -167,7 +258,7 @@ func gatewayDemoJob(name, sandboxName, runnerImage string, attemptID int64, iden
 	)
 	initContainers := pod["initContainers"].([]any)
 	init := restrictedContainer("demo-config", runnerImage,
-		[]string{"sh", "-ec", "tar --no-same-owner --no-same-permissions --touch -xzf /demo-bundle/bundle.tgz -C /demo && git -C /demo/repo init -q && git -C /demo/repo add sample.txt && git -C /demo/repo -c user.name=fullsend-demo -c user.email=demo@example.invalid commit -qm 'Add demo input'"},
+		[]string{"sh", "-ec", "tar --no-same-owner --no-same-permissions --no-overwrite-dir --touch -xzf /demo-bundle/bundle.tgz -C /demo && git -C /demo/repo init -q && git -C /demo/repo add sample.txt && git -C /demo/repo -c user.name=fullsend-demo -c user.email=demo@example.invalid commit -qm 'Add demo input'"},
 		"10m", "32Mi", "100m", "128Mi")
 	init["volumeMounts"] = []any{
 		map[string]any{"name": "demo-bundle", "mountPath": "/demo-bundle", "readOnly": true},

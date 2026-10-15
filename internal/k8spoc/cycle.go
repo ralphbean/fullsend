@@ -156,6 +156,11 @@ func reconcileGatewayAttempt(ctx context.Context, conn *pgx.Conn, k *kubeClient,
 			if err != nil || !verified {
 				return err
 			}
+			if a.execution == "fullsend" {
+				if err = k.deleteJiraEventConfigMap(ctx, a.runID); err != nil {
+					return err
+				}
+			}
 			return completeGatewayAttempt(ctx, conn, a)
 		default:
 			return fmt.Errorf("unexpected gateway attempt state %q", a.state)
@@ -192,6 +197,11 @@ func reconcileGatewayAttempt(ctx context.Context, conn *pgx.Conn, k *kubeClient,
 	verified, err := verifyGatewayStop(ctx, k, a)
 	if err != nil || !verified {
 		return err
+	}
+	if a.execution == "fullsend" {
+		if err = k.deleteJiraEventConfigMap(ctx, a.runID); err != nil {
+			return err
+		}
 	}
 	return k.delete(ctx, a.name, job.Metadata.UID)
 }

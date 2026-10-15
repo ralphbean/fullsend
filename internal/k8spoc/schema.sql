@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS selected_runs (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   observation_id bigint NOT NULL REFERENCES observations(id),
   harness text NOT NULL,
+  execution text NOT NULL DEFAULT 'stub',
+  event_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   state text NOT NULL DEFAULT 'waiting',
   UNIQUE (observation_id, harness)
 );

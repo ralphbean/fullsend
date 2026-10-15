@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>From kind cluster to Fullsend demos — Kubernetes PoC</title>
+  <style>
+    :root {
+      --paper: #f5f2e9;
+      --paper-deep: #ebe6d9;
+      --ink: #202c2c;
+      --muted: #626e69;
+      --line: #d4d0c4;
+      --green: #315b4c;
+      --green-soft: #e2ebe3;
+      --amber: #956324;
+      --amber-soft: #f2e9d7;
+      --red: #8d4c3d;
+      --red-soft: #f1e3dc;
+      --white: #fffdf8;
+      --serif: Georgia, "Times New Roman", serif;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.6 var(--sans);
+    }
+    a { color: var(--green); text-underline-offset: 3px; }
+    button { font: inherit; }
+    .shell { max-width: 1240px; margin: 0 auto; padding: 30px clamp(18px, 4vw, 56px) 60px; }
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 16px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .masthead a { color: inherit; }
+    .layout { display: grid; grid-template-columns: minmax(230px, 290px) minmax(0, 1fr); gap: clamp(32px, 6vw, 82px); }
+    .rail { padding-top: 34px; }
+    .rail h2, .eyebrow {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .chapter-list { display: grid; gap: 5px; }
+    .chapter-link {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 31px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 9px;
+      border: 0;
+      border-radius: 7px;
+      color: var(--ink);
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .chapter-link:hover, .chapter-link:focus-visible { background: var(--paper-deep); }
+    .chapter-link[aria-current="step"] { background: var(--green-soft); color: #234536; }
+    .chapter-number { color: var(--muted); font: 700 13px var(--serif); }
+    .chapter-name { font-size: 13px; font-weight: 700; line-height: 1.3; }
+    .chapter-status { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .rail-note { margin: 23px 0 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    main { min-width: 0; padding-top: 42px; }
+    .intro { max-width: 760px; }
+    .kicker { color: var(--green); font-size: 12px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    h1, h2, h3 { text-wrap: balance; }
+    h1 { max-width: 800px; margin: 12px 0 18px; font: 500 clamp(42px, 6vw, 76px)/.99 var(--serif); letter-spacing: -.045em; }
+    .dek { max-width: 690px; margin: 0; color: #45534d; font: 21px/1.48 var(--serif); }
+    .intro-copy { max-width: 680px; margin: 24px 0 0; color: #45534d; }
+    .status-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 35px 0 30px; padding: 19px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .summary-item { padding-right: 12px; }
+    .summary-item strong { display: block; font: 600 25px/1.1 var(--serif); }
+    .summary-item span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .arc { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 23px 0 28px; color: var(--muted); font-size: 11px; font-weight: 750; letter-spacing: .04em; }
+    .arc span { color: var(--green); }
+    .arc b { color: #98978d; font-size: 14px; }
+    .start-button, .chapter-nav button {
+      border: 1px solid var(--green);
+      border-radius: 5px;
+      padding: 10px 15px;
+      color: var(--white);
+      background: var(--green);
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .start-button:hover, .chapter-nav button:hover { background: #244639; }
+    .boundary { margin: 29px 0 0; padding: 15px 17px; border-left: 3px solid var(--amber); background: var(--amber-soft); color: #4e4639; font-size: 13px; }
+    .boundary strong { color: var(--ink); }
+    .chapter { max-width: 800px; animation: arrive .22s ease-out; }
+    .chapter[hidden], .intro[hidden] { display: none; }
+    @keyframes arrive { from { opacity: .6; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    .chapter-topline { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .chapter-topline a { font-weight: 600; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 99px; font-size: 11px; line-height: 1.4; }
+    .badge.verified { color: #28543e; background: var(--green-soft); }
+    .badge.planned { color: #78501f; background: var(--amber-soft); }
+    .badge::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; }
+    .chapter h2 { margin: 15px 0 11px; font: 500 clamp(34px, 4.5vw, 52px)/1.05 var(--serif); letter-spacing: -.03em; }
+    .chapter-lede { max-width: 700px; margin: 0; color: #45534d; font: 20px/1.5 var(--serif); }
+    .chapter-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(205px, .65fr); gap: 34px; margin-top: 28px; }
+    .chapter-body h3 { margin: 0 0 9px; font: 700 12px var(--sans); letter-spacing: .1em; text-transform: uppercase; }
+    .chapter-body p { margin: 0 0 14px; }
+    .chapter-body ul { margin: 0; padding-left: 19px; }
+    .chapter-body li { margin: 0 0 9px; }
+    .open-question { padding-left: 16px; border-left: 1px solid var(--line); }
+    .open-question p { color: #4f5a54; font-size: 14px; }
+    figure { margin: 31px 0 0; padding: 18px 0 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    figcaption { margin-bottom: 13px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    .flow { display: flex; align-items: stretch; gap: 8px; width: 100%; }
+    .flow-box { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 67px; padding: 10px 11px; border: 1px solid #c6c9bf; border-radius: 4px; background: var(--white); font-size: 12px; font-weight: 750; line-height: 1.3; text-align: center; }
+    .flow-box small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; }
+    .flow-box.key { border-color: #77917c; background: var(--green-soft); }
+    .flow-box.warn { border-color: #d0ac71; background: var(--amber-soft); }
+    .flow-box.untrusted { border-color: #c98d7a; background: var(--red-soft); }
+    .flow-arrow { flex: 0 0 auto; align-self: center; color: #858c82; font-size: 18px; }
+        .dual-flow { display: grid; gap: 10px; }
+    .diagram-caption { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+    .evidence { margin: 20px 0 0; color: var(--muted); font-size: 12px; }
+    .evidence a { margin-right: 12px; }
+    .chapter-nav { display: flex; justify-content: space-between; gap: 12px; margin-top: 29px; padding-top: 18px; border-top: 1px solid var(--line); }
+    .chapter-nav button { color: var(--green); background: transparent; }
+    .chapter-nav button:hover { color: white; }
+    .chapter-nav button:disabled { border-color: var(--line); color: #9a9d95; background: transparent; cursor: default; }
+    .return-intro { border: 0; padding: 8px 0; color: var(--green); background: transparent; font-weight: 750; cursor: pointer; }
+    .return-intro:hover { text-decoration: underline; }
+    .footer { max-width: 800px; margin: 46px 0 0 auto; padding-top: 17px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .footer p { margin: 0 0 8px; }
+    :focus-visible { outline: 3px solid #a67434; outline-offset: 3px; }
+
+    @media (max-width: 760px) {
+      .shell { padding-top: 18px; }
+      .layout { grid-template-columns: 1fr; gap: 8px; }
+      .rail { padding-top: 19px; }
+      .chapter-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .chapter-link { grid-template-columns: 24px minmax(0, 1fr); gap: 6px; padding: 9px 6px; }
+      .chapter-status { grid-column: 2; margin-top: -4px; }
+      main { padding-top: 25px; }
+      .chapter-body { grid-template-columns: 1fr; gap: 20px; }
+      .open-question { padding: 0 0 0 13px; }
+      .rail-note { display: none; }
+    }
+    @media (max-width: 460px) {
+      .masthead { align-items: flex-start; flex-direction: column; gap: 5px; }
+      .chapter-list { grid-template-columns: 1fr; }
+      .chapter-link { grid-template-columns: 27px minmax(0, 1fr) auto; }
+      .chapter-status { grid-column: auto; margin: 0; }
+      .status-summary { gap: 9px; }
+      .summary-item strong { font-size: 21px; }
+      .summary-item span { font-size: 10px; }
+      .flow { flex-direction: column; }
+      .flow-box { min-height: 52px; }
+      .flow-arrow { transform: rotate(90deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <a href="README.md">Fullsend · Kubernetes proof of concept</a>
+      <span>Progress through 9 October 2026</span>
+    </header>
+
+    <div class="layout">
+      <nav class="rail" aria-label="Milestone chapters">
+        <h2>Contents · 6 milestones</h2>
+        <div class="chapter-list">
+          <button class="chapter-link" type="button" data-chapter="1" aria-controls="chapter-1" aria-expanded="false"><span class="chapter-number">01</span><span class="chapter-name">Rebuildable kind</span><span class="chapter-status">Verified</span></button>
+          <button class="chapter-link" type="button" data-chapter="2" aria-controls="chapter-2" aria-expanded="false"><span class="chapter-number">02</span><span class="chapter-name">Durable local loop</span><span class="chapter-status">Core verified</span></button>
+          <button class="chapter-link" type="button" data-chapter="3" aria-controls="chapter-3" aria-expanded="false"><span class="chapter-number">03</span><span class="chapter-name">Live Jira selection</span><span class="chapter-status">Core verified</span></button>
+          <button class="chapter-link" type="button" data-chapter="4" aria-controls="chapter-4" aria-expanded="false"><span class="chapter-number">04</span><span class="chapter-name">Remote execution</span><span class="chapter-status">Core verified</span></button>
+          <button class="chapter-link" type="button" data-chapter="5" aria-controls="chapter-5" aria-expanded="false"><span class="chapter-number">05</span><span class="chapter-name">Private GitHub mint</span><span class="chapter-status">Core verified</span></button>
+          <button class="chapter-link" type="button" data-chapter="6" aria-controls="chapter-6" aria-expanded="false"><span class="chapter-number">06</span><span class="chapter-name">GCP workload identity</span><span class="chapter-status">Verified</span></button>
+        </div>
+        <p class="rail-note">Choose a chapter to open its goal, what changed, the evidence, and the workaround or boundary that remains.</p>
+      </nav>
+
+      <main id="story">
+        <section class="intro" id="intro">
+          <p class="kicker">A field guide to the PoC</p>
+          <h1>From a local cluster to a run that can be trusted</h1>
+          <p class="dek">Six milestones trace one question: can a small Kubernetes setup take work from discovery to a recorded result, while keeping execution and credentials inside clear boundaries?</p>
+          <p class="intro-copy">The milestones move from a rebuildable cluster, through durable dispatch and live Jira selection, into remote Fullsend execution and two separate workload identity paths. A controlled stage run now connects Jira selection to real triage execution, writeback, and remote cleanup.</p>
+
+          <div class="status-summary" aria-label="Overall status">
+            <div class="summary-item"><strong>1 &amp; 6</strong><span>verified against their recorded checks</span></div>
+            <div class="summary-item"><strong>2–5</strong><span>core paths verified; acceptance gaps remain</span></div>
+            <div class="summary-item"><strong>Stage run</strong><span>controlled Jira triage acceptance passed</span></div>
+          </div>
+
+          <div class="arc" aria-label="Milestone arc">
+            <span>LOCAL PLUMBING</span><b>→</b><span>DURABLE WORK</span><b>→</b><span>TRUSTED SELECTION</span><b>→</b><span>REMOTE RUN</span><b>→</b><span>GITHUB IDENTITY</span><b>→</b><span>GCP IDENTITY</span>
+          </div>
+
+          <button class="start-button" type="button" data-open="1">Open chapter one <span aria-hidden="true">→</span></button>
+
+          <p class="boundary"><strong>What this evidence says:</strong> the PoC demonstrates durable control flow and selected remote execution paths on a local kind cluster. It does not establish OpenShift compatibility, production tenant isolation, high availability, or exactly-once external effects.</p>
+        </section>
+
+        <section class="chapter" id="chapter-1" data-index="1" hidden tabindex="-1" aria-labelledby="title-1">
+          <div class="chapter-topline"><span>Chapter 01 · Foundation</span><span class="badge verified">Verified</span></div>
+          <h2 id="title-1">Make the environment repeatable first</h2>
+          <p class="chapter-lede">Before asking whether dispatch is reliable, make the cluster easy to rebuild and its state easy to recognize.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Create a local kind environment that can be reset without touching the user's default Kubernetes context or unrelated clusters.</p><h3>What changed</h3><ul><li>Small, ordered scripts create the named cluster, build this checkout's control image, load configuration, apply PostgreSQL and run a smoke cycle.</li><li>PostgreSQL uses a PVC. Re-deploying and restarting its Pod preserve data; a deliberate cluster reset replaces the cluster and its database.</li><li>Ownership marker and dedicated kubeconfig checks guard cluster operations. Reports capture source/build details and redacted diagnostics.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>The tested environment is rootless Podman plus kind. Its default networking is not proof of tenant isolation or NetworkPolicy enforcement. The recorded checks passed twice from reset; they do not characterize production operations.</p></aside>
+          </div>
+          <figure><figcaption>One owned local environment</figcaption><div class="flow" role="img" aria-label="This checkout builds pinned images, loads them into an owned kind cluster, applies PostgreSQL with persistent storage, then runs smoke checks."><div class="flow-box">This checkout<small>build + pinned images</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Owned kind cluster<small>dedicated context</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">PostgreSQL PVC<small>survives Pod restart</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Smoke report<small>recorded outcome</small></div></div><p class="diagram-caption">The named cluster is disposable; local inputs and reports stay under ignored <code>k8s/.local/</code> and <code>k8s/.state/</code>.</p></figure>
+          <p class="evidence">Source trail: <a href="STATUS.md">dated status and evidence</a><a href="RESULTS.md">fixture results</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Introduction</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <section class="chapter" id="chapter-2" data-index="2" hidden tabindex="-1" aria-labelledby="title-2">
+          <div class="chapter-topline"><span>Chapter 02 · Durable control flow</span><span class="badge verified">Core path verified</span></div>
+          <h2 id="title-2">Give work a memory that outlives a Pod</h2>
+          <p class="chapter-lede">A poll or dispatcher can stop between steps. The database records what was seen, what was selected, and whether a Job was actually cleaned up.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Build a credential-free fixture loop that discovers work, selects runs, launches independent Kubernetes Jobs, and reconciles the result in a later cycle.</p><h3>What changed</h3><ul><li>Poll and dispatch cycles persist observations, checkpoints, selected-run sets, attempts, and outcomes in PostgreSQL.</li><li>Deterministic Job names and UID associations make ambiguous create responses and later reconciliation visible.</li><li>Capacity and entity-conflict reservations keep waiting or uncertain work from silently disappearing. Job cleanup must be observed before those reservations are released.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>The baseline source and runner are fixtures and stubs, not Jira or an agent. Database-backed tests cover many recovery cases, but process kills and checkpoint-commit uncertainty have not been fault-injected in kind. Durable bookkeeping is not an exactly-once promise.</p></aside>
+          </div>
+          <figure><figcaption>Observe first, reconcile later</figcaption><div class="flow" role="img" aria-label="Fixture poller records observations and checkpoints in PostgreSQL; dispatcher selects and reserves runs; independent stub Jobs report outcomes; a later dispatch cycle reconciles and cleans them up."><div class="flow-box">Fixture poller<small>candidate + checkpoint</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">PostgreSQL<small>observations · runs · attempts</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Dispatcher<small>select + reserve</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Stub Job<small>next cycle observes + cleans</small></div></div><p class="diagram-caption">Independent Jobs outlive the CronJob invocation that launched them; state in PostgreSQL connects the cycles.</p></figure>
+          <p class="evidence">Source trail: <a href="PLAN.md">milestone 2 plan</a><a href="STATUS.md">current gaps</a><a href="RESULTS.md">fixture results</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <section class="chapter" id="chapter-3" data-index="3" hidden tabindex="-1" aria-labelledby="title-3">
+          <div class="chapter-topline"><span>Chapter 03 · Live source</span><span class="badge verified">Core path verified</span></div>
+          <h2 id="title-3">Let Jira nominate work; keep selection trusted</h2>
+          <p class="chapter-lede">The live source contributes references. The dispatcher fetches the current issue and actor context, then applies the registered repository rules and CEL selection.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Replace fixture discovery with one bounded Jira project and label while keeping authorization, repository context, and harness choice in trusted configuration.</p><h3>What changed</h3><ul><li>A controlled issue and a later trigger comment became separate observations and separate CEL-selected stub runs.</li><li>Replay did not duplicate observations or runs. Role checks, current issue refetch, and repository harness selection run in the live path.</li><li>A controlled stage run also selected an explicitly enabled triage harness and completed a real Fullsend Job with writeback and verified cleanup.</li><li>Negative cases—including unauthorized actors, failed pages, and corrupt checkpoints—were exercised against fake Jira responses and real PostgreSQL.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>Jira search returns current issue snapshots, so this is reconciliation polling, not proof that every intermediate transition was delivered. Some negative tests use a fake client; changed config behavior has not been exercised against live Jira. Real execution remains limited to the explicitly enabled triage harness; ordinary selections still use stubs.</p></aside>
+          </div>
+          <figure><figcaption>Source data stays on the untrusted side of the decision</figcaption><div class="flow" role="img" aria-label="Jira poller stores an event reference; dispatcher refetches Jira state and actor permissions, applies registered repository configuration and CEL selection, then launches the selected execution path."><div class="flow-box untrusted">Jira event reference<small>not execution policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Refetch issue + actor<small>current source state</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Registered repo + CEL<small>trusted selection</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Selected run<small>stub by default; triage opt-in</small></div></div><p class="diagram-caption">Issue fields cannot choose the namespace, image, role, command, or credential.</p></figure>
+          <p class="evidence">Source trail: <a href="LIVE-RESULTS.md">live Jira results</a><a href="STATUS.md">current gaps</a><a href="PLAN.md">milestone 3 plan</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <section class="chapter" id="chapter-4" data-index="4" hidden tabindex="-1" aria-labelledby="title-4">
+          <div class="chapter-topline"><span>Chapter 04 · Remote execution</span><span class="badge verified">Core path verified</span></div>
+          <h2 id="title-4">Run Fullsend through a gateway beyond the cluster</h2>
+          <p class="chapter-lede">A Kubernetes runner can call <code>fullsend run</code>, transfer work to a user-provisioned HyperShell gateway, and retain evidence after the Pod exits.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Prove useful execution, output validation, and remote cleanup using the same restricted runner shape intended for dispatch.</p><h3>What changed</h3><ul><li>Gateway probes checked sandbox creation, file transfer, command execution, output hashes, and deletion.</li><li>A manual UBI runner completed <code>fullsend run</code> with real Vertex inference. A fixture-only <code>gateway-demo</code> also entered the durable dispatcher path.</li><li>A two-workspace check confirmed that sandbox and provider records stayed within their workspaces. It used synthetic credentials, so it demonstrated resource scoping rather than inference isolation.</li><li>The controlled stage Jira run used the same remote runner and cleanup path; the run wrote back to Jira only after the allowlisted triage harness completed.</li><li>Independent cleanup Jobs reconcile remote sandboxes before runner Jobs and their capacity reservations are removed. Cancellation and missing-runner cases use that same gate.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>Runner Jobs share the dedicated gateway's administrative credential, and TLS verification is disabled while the gateway certificate/CA issue remains open. This is not tenant-safe gateway authentication. Only the explicitly enabled triage harness runs for real; ordinary Jira selections continue to use stubs.</p></aside>
+          </div>
+          <figure><figcaption>Two workloads, one cleanup gate</figcaption><div class="dual-flow"><div class="flow" role="img" aria-label="Runner Job sends work to the remote HyperShell sandbox and persists validated output."><div class="flow-box">Runner Job<small>trusted Kubernetes workload</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">HyperShell sandbox<small>remote Fullsend execution</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Persistent evidence<small>validated output + hashes</small></div></div><div class="flow" role="img" aria-label="The dispatcher starts an independent cleanup Job, confirms remote absence, then releases the attempt reservation."><div class="flow-box">Dispatcher<small>durable attempt state</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box warn">Cleanup Job<small>confirm remote absence</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Release reservation<small>after cleanup evidence</small></div></div></div><p class="diagram-caption">The remote sandbox is not owned by the short-lived runner Pod; cleanup has its own retryable Job and durable evidence.</p></figure>
+          <p class="evidence">Source trail: <a href="STATUS.md">gateway results and limitations</a><a href="README.md">gateway setup and recovery</a><a href="PLAN.md">milestone 4 plan</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <section class="chapter" id="chapter-5" data-index="5" hidden tabindex="-1" aria-labelledby="title-5">
+          <div class="chapter-topline"><span>Chapter 05 · Repository identity</span><span class="badge verified">Core path verified</span></div>
+          <h2 id="title-5">Trade a short-lived Pod identity for a scoped GitHub token</h2>
+          <p class="chapter-lede">The runner proves which Kubernetes service account it is. A private mint maps that identity to one configured repository and role before asking GitHub for an installation token.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Give trusted runner code repository access without putting a GitHub App private key in the runner or remote sandbox.</p><h3>What changed</h3><ul><li>The mint validates Kubernetes token signature, issuer, audience, expiry, namespace, service account, and UID claims against explicit policy.</li><li>It requests a GitHub token scoped to immutable repository ID and role permissions, then checks GitHub returned that exact scope.</li><li>Standalone and dispatcher-created Jobs exchanged projected tokens; rotation, a useful run, output validation, and remote cleanup were observed.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>This kind PoC has no server-side Job admission policy. Job creation can select namespace service accounts, so the launcher remains trusted code. Offline JWT checks cannot revoke a deleted Pod's assertion immediately, and minted GitHub tokens live until their own expiry.</p></aside>
+          </div>
+          <figure><figcaption>Mint identity is separate from launcher authority</figcaption><div class="flow" role="img" aria-label="Runner presents a short-lived, mint-audience Kubernetes assertion to the private mint; the mint validates it and requests a repository- and role-scoped GitHub installation token. The launcher Kubernetes identity does not enter the runner or sandbox."><div class="flow-box">Projected Pod assertion<small>mint audience · short lifetime</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Private mint<small>validates identity + policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">GitHub App token<small>one repository + role</small></div></div><p class="diagram-caption">The launcher creates Jobs; the runner receives only the repository identity needed by its task.</p></figure>
+          <p class="evidence">Source trail: <a href="STATUS.md">mint implementation and live evidence</a><a href="README.md">runner identity boundary</a><a href="PLAN.md">milestone 5 plan</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <section class="chapter" id="chapter-6" data-index="6" hidden tabindex="-1" aria-labelledby="title-6">
+          <div class="chapter-topline"><span>Chapter 06 · Inference identity</span><span class="badge verified">Verified</span></div>
+          <h2 id="title-6">Give inference its own workload identity path</h2>
+          <p class="chapter-lede">Repository access and cloud inference use separate projected tokens and separate trust decisions. Neither needs a static service-account key.</p>
+          <div class="chapter-body">
+            <div><h3>The goal</h3><p>Federate a kind service-account identity to Google, reject an ungranted identity, and keep a real remote inference run working while its assertion rotates.</p><h3>What changed</h3><ul><li>After rebuilding kind, the current public JWKS was uploaded to the existing WIF provider. The authorized identity completed Vertex inference before and after token rotation; the wrong runner identity was denied.</li><li>A Fullsend/HyperShell run refreshed the inference-only assertion into the active sandbox, observed its rotation, called Vertex, and persisted validated output.</li><li>The tests used existing cloud resources; no cloud pool, provider, service account, API, or IAM resource was created or destroyed.</li></ul></div>
+            <aside class="open-question"><h3>Shortcut &amp; boundary</h3><p>A kind reset changes signing keys, so the existing provider's JWKS must be refreshed before the next run. This does not prove production network isolation or OpenShift compatibility. Inference can incur normal Vertex charges; the optional OpenTofu module remains unapplied.</p></aside>
+          </div>
+          <figure><figcaption>Two credentials, two authorities</figcaption><div class="dual-flow"><div class="flow" role="img" aria-label="Mint-audience token goes to the private mint, which returns a scoped GitHub token."><div class="flow-box">Mint-audience token<small>repository identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Private mint<small>validates identity + policy</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">GitHub token<small>repository + role scope</small></div></div><div class="flow" role="img" aria-label="A separate inference-audience token goes through Google STS to an authorized inference service account and Vertex."><div class="flow-box">Inference-audience token<small>separate identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box key">Google STS<small>authorized service identity</small></div><span class="flow-arrow" aria-hidden="true">→</span><div class="flow-box">Vertex<small>inference request</small></div></div></div><p class="diagram-caption">For a remote sandbox, only the inference assertion is refreshed across the boundary; the mint assertion and launcher API identity stay out.</p></figure>
+          <p class="evidence">Source trail: <a href="STATUS.md">WIF checks and caveats</a><a href="gcp/README.md">JWKS refresh and optional infrastructure</a><a href="PLAN.md">milestone 6 plan</a></p>
+          <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
+        </section>
+
+        <footer class="footer">
+          <p>The dated status and milestone definitions are the source of truth for these summaries. This story reflects evidence recorded through 9 October 2026.</p>
+          <p><a href="STATUS.md">Read the detailed status</a> · <a href="PLAN.md">Read the plan</a> · <a href="README.md">Open the PoC guide</a></p>
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const intro = document.getElementById("intro");
+      const chapters = Array.from(document.querySelectorAll(".chapter"));
+      const links = Array.from(document.querySelectorAll(".chapter-link"));
+      const story = document.getElementById("story");
+      let current = 0;
+
+      function showChapter(index, focusChapter = true) {
+        current = index;
+        intro.hidden = index !== 0;
+        chapters.forEach((chapter) => {
+          const active = Number(chapter.dataset.index) === index;
+          chapter.hidden = !active;
+          if (active && focusChapter) chapter.focus({ preventScroll: true });
+        });
+        links.forEach((link) => {
+          const active = Number(link.dataset.chapter) === index;
+          link.setAttribute("aria-expanded", String(active));
+          if (active) link.setAttribute("aria-current", "step");
+          else link.removeAttribute("aria-current");
+        });
+        story.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+
+      links.forEach((link) => link.addEventListener("click", () => showChapter(Number(link.dataset.chapter))));
+      document.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () => showChapter(Number(button.dataset.open))));
+      document.querySelectorAll("[data-prev]").forEach((button) => button.addEventListener("click", () => showChapter(current > 1 ? current - 1 : 0, current > 1)));
+      document.querySelectorAll("[data-next]").forEach((button) => button.addEventListener("click", () => showChapter(Math.min(6, current + 1))));
+    })();
+  </script>
+</body>
+</html>

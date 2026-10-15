@@ -1,6 +1,6 @@
 # Local dispatcher and poller PoC on kind
 
-Planning handoff written 2026-10-02 from baseline checkout `90833a878`. For current implementation and verification results, see [STATUS.md](STATUS.md).
+Planning handoff started 2026-10-02 from baseline checkout `90833a878`. For current implementation and verification results, see [STATUS.md](STATUS.md).
 
 Build this incrementally in `fullsend-ai/fullsend`. The first useful stopping point is milestone 2: a reproducible, credential-free poll → PostgreSQL → dispatch → Kubernetes Job → recorded result demonstration. Milestone 4 adds representative Fullsend work through a user-provisioned HyperShell gateway. Milestones 5 and 6 independently replace repository and inference credentials with workload identity.
 
@@ -25,7 +25,7 @@ Build this incrementally in `fullsend-ai/fullsend`. The first useful stopping po
 | 5. Private local mint | Projected Pod identity obtains a repository/role-scoped GitHub token | Test GitHub Apps/installations for the live exchange |
 | 6. GCP WIF inference | kind identity obtains Google credentials and performs inference | Dedicated GCP resources, IAM permissions, model access/billing |
 
-Milestones 1–2 are the first implementation session's target. Milestone 4 is a substantial execution PoC, not just YAML. Milestone 5 needs new mint authentication/authorization code. Milestone 6 can start after milestone 1 with an isolated probe Job and need not wait for the mint. None of these proves OpenShift SCC compatibility, production isolation, HA, or exactly-once external effects.
+Milestones 1–6 have implementation evidence in [STATUS.md](STATUS.md), with acceptance gaps called out there. These milestones do not prove OpenShift SCC compatibility, production isolation, HA, or exactly-once external effects.
 
 ## Files and configuration ownership
 
@@ -193,10 +193,10 @@ The repeatable local entry points are `k8s/kind/15-wif-inference.sh` for the sta
 
 ## Execution and verification guidance for the next session
 
-Implement milestones 1–2 first, with fixtures and stub Jobs. Read repository guidance for Go, shell, forge abstraction and runtime changes as applicable. All application forge operations go through the existing forge abstraction; do not implement the live source in shell. When changing Go production code, verify patch coverage (80% target, 75% floor), not only passing tests. Use meaningful transaction/launcher/recovery tests and actual kind scenarios.
+Keep any expansion of real Jira execution tightly scoped to operator-enabled harnesses and use existing dispatch/cleanup contracts. Read repository guidance for Go, shell, forge abstraction and runtime changes as applicable. All application forge operations go through the existing forge abstraction; do not implement the live source in shell. When changing Go production code, verify patch coverage (80% target, 75% floor), not only passing tests. Preserve focused transaction/launcher/recovery coverage.
 
-Before running `make lint`, stage only the intended changes. Update CLI/config references and related guides whenever implementing new flags or fields. Use `go run ./cmd/fullsend …` for host-side CLI commands. Container images must build the same checkout. No commit, push, deployment, cloud resource creation or source mutation was performed while writing this plan.
+Before running `make lint`, stage only the intended changes. Update CLI/config references and related guides whenever implementing new flags or fields. Use `go run ./cmd/fullsend …` for host-side CLI commands. Container images must build the same checkout.
 
 Maintain a small evidence report per milestone: source/build revision, versions, command, expected behavior, observed outcome and remaining limitations. The smoke command must be noninteractive, terminate on failure, and return a useful exit status. Keep manual trigger commands so the demo does not require waiting for scheduled minutes.
 
-Open inputs for later milestones: Jira test scope; actual gateway endpoint and connection bundle; approved test repository/App installations; cloud development resource identifiers and permission grants. These do not block the fixture milestones. Leave webhooks, continuous/active-active workers, general tenant onboarding, station/domain migration, production PostgreSQL operations and OpenShift validation for follow-up work.
+Leave webhooks, continuous/active-active workers, general tenant onboarding, station/domain migration, production PostgreSQL operations and OpenShift validation for follow-up work.

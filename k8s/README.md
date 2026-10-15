@@ -1,8 +1,8 @@
 # Local Kubernetes dispatcher proof of concept
 
-See [STATUS.md](STATUS.md) for the dated results and remaining work across all six milestones. [PLAN.md](PLAN.md) defines their scope and acceptance criteria.
+See [STATUS.md](STATUS.md) for the dated results and remaining work across the six milestones. [PLAN.md](PLAN.md) defines their scope and acceptance criteria.
 
-This directory implements milestones 1–5: a local kind cluster, PostgreSQL, fixture and Jira poller profiles, dispatcher CronJobs, independent runner Jobs, the gateway execution path, and an opt-in private Kubernetes-identity mint for repository-scoped GitHub App tokens. The live profile uses real Jira discovery, role checks, and CEL harness selection. Milestone 4 has manual gateway transport and `fullsend run` evidence, including a successful real Vertex inference Job with persistent output and verified sandbox deletion. An opt-in fixture selection dispatches the gateway demo through the durable Job path; other fixture and Jira selections still launch stubs. Inference identity remains a separate Google Workload Identity Federation path.
+This directory implements a local kind cluster, PostgreSQL, fixture and Jira poller profiles, dispatcher CronJobs, independent runner Jobs, the gateway execution path, an opt-in private Kubernetes-identity mint for repository-scoped GitHub App tokens, and GCP Workload Identity Federation for inference. The live profile uses real Jira discovery, project-role authorization, and CEL harness selection. Real Jira execution is disabled unless `fullsend_harnesses` explicitly opts in; the current allowlist is `triage`. A controlled stage acceptance passed on 2026-10-09, including a real triage run, Jira writeback, and verified cleanup.
 
 ## Prerequisites
 
@@ -37,11 +37,14 @@ Place the following inputs under ignored `k8s/.local/live/` before deploying. Ke
 
 | Input | Content |
 | --- | --- |
-| `settings.json` | `{"jira_base_url":"https://YOUR-JIRA-SITE","project":"FSENDAI","label":"fullsend-dispatcher-test","repo":"ralphbean/jira-triage-test"}` |
+| `settings.json` | `{"jira_base_url":"https://YOUR-JIRA-SITE","project":"FSENDAI","label":"fullsend-dispatcher-test","repo":"ralphbean/jira-triage-test","fullsend_harnesses":[]}` |
 | `repos.yaml` | A `repos.Manifest` with `version: 1` and `github.repos` containing `name: ralphbean/jira-triage-test` |
 | `repo/` | Checkout of that repository at the version to use for selection |
 | `jira-token` | Jira API token, with no newline requirement |
 | `jira-email` | Account email associated with the token |
+| `wif.json` | Required only for real Fullsend execution: `{"gcp_audience":"//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER","vertex_project":"PROJECT_ID"}` |
+
+The API identity must be able to read the project's role assignments so the poller/dispatcher can resolve whether the issue or comment author has the existing write-level authorization. Jira Cloud requires **Administer Projects** on the project (or global **Administer Jira**) for the [project roles API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-roles/). The configured test account now has the project **Administer** role, and the live acceptance confirmed role lookup and actor authorization succeed. Keep the actor check enabled; do not bypass it to force dispatch.
 
 For example, clone the repository into `k8s/.local/live/repo`, create the input files, then run:
 
@@ -54,7 +57,16 @@ k8s/kind/06-live-smoke.sh --profile live
 
 The smoke script triggers poll and dispatch immediately. Its report under ignored `k8s/.state/live-smoke-*` includes control Job logs, the live observation count, and `runs.txt` with selection states, Job names, Kubernetes UIDs, and outcomes. The same evidence remains in `observations`, `selected_runs`, and `attempts` in the PostgreSQL Pod after a completed runner Job is removed. A new issue or an `/fs-triage` comment on a labeled issue should create a distinct observation if the repository harness CEL matches. A second smoke cycle reconciles a Job that was still running during the first. The test repository can contain other material: the Jira project and exact label define the source scope, and the registered checkout supplies selection context. Its existing workflows are independent of this PoC.
 
-The poller reads comments and changelog pages for each matching issue and records an issue-specific checkpoint with its observations. Jira search returns updated issue snapshots, so this is a reconciliation poll; it cannot prove delivery of every intermediate transition. A failed search fails the cycle without changing checkpoints; a failed issue page leaves that issue's checkpoint unchanged while other issues continue. A pending candidate is refetched before selection, including current labels and the actor's project role. Removed labels and actors without a write role are denied. The PoC does not write Jira checkpoint properties. The live profile still launches only stub Jobs; it does not comment on or modify Jira issues.
+The poller reads comments and changelog pages for each matching issue and records an issue-specific checkpoint with its observations. Jira search returns updated issue snapshots, so this is a reconciliation poll; it cannot prove delivery of every intermediate transition. A failed search fails the cycle without changing checkpoints; a failed issue page leaves that issue's checkpoint unchanged while other issues continue. A pending candidate is refetched before selection, including current labels and the actor's project role. Removed labels and actors without a write role are denied. The PoC does not write Jira checkpoint properties. By default, live selections launch stub Jobs and do not comment on Jira.
+
+To opt the stage test repository into the real triage run, set `fullsend_harnesses` to `["triage"]` in `settings.json`, provide the WIF audience and Vertex project in `wif.json`, deploy the private mint for the registered repository, and ensure the gateway bundle and WIF runner setup are present. Then rebuild the control image and run:
+
+```sh
+k8s/kind/02-images.sh --profile live
+k8s/kind/05-live-workloads.sh --profile live
+```
+
+The live setup extends the existing WIF provider and inference service account for only the registered repository's triage ServiceAccount. It bundles the checked-out repository and its commit into an immutable ConfigMap, persists selected normalized Jira events, and sends them to the existing `fullsend run triage` command. The Jira API token is available to the trusted runner's post-run script for the expected stage comment; it is not put in the sandbox environment. The dispatcher still requires the independent cleanup Job to confirm remote absence before completing the attempt. Use one controlled question issue under the unique test label: the real triage agent can write its normal response comment to that stage issue. Do not opt ordinary project work into this path.
 
 ## HyperShell gateway setup and probe
 
@@ -184,4 +196,4 @@ kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullse
 
 If a rebuild fails after cluster creation, rerun `deploy.sh`. If the ownership marker or dedicated kubeconfig was lost, inspect the named cluster before restoring them; the scripts intentionally refuse to delete it automatically.
 
-This PoC has no active-active fencing or production database operations. Remote cleanup covers only the dedicated gateway's owned PoC sandbox names. See [PLAN.md](PLAN.md) for later milestones and their external inputs.
+This PoC has no active-active fencing or production database operations. Remote cleanup covers only the dedicated gateway's owned PoC sandbox names. See [PLAN.md](PLAN.md) for scope and follow-up work.

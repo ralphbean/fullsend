@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const validTestJiraEventPayload = `{"repo":"owner/repo","entity":{"kind":"work_item","id":123,"key":"FSENDAI-123","url":"https://stage.example/browse/FSENDAI-123"},"transition":{"kind":"opened"},"actor":{"id":"test-account","kind":"human","role":"admin"},"state":{"labels":["fullsend-dispatcher-test"]},"source":{"system":"jira","raw_type":"issue","raw_action":"created"}}`
+
 func TestGatewayProbeJobIsolation(t *testing.T) {
 	image := "localhost/fullsend-poc-runner@sha256:" + strings.Repeat("a", 64)
 	sandboxImage := "ghcr.io/example/sandbox@sha256:" + strings.Repeat("b", 64)
@@ -65,6 +67,20 @@ func TestGatewayDemoJobUsesRestrictedRunnerAndPinnedBundle(t *testing.T) {
 	pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	if pod["automountServiceAccountToken"] != false || pod["serviceAccountName"] != "runner" {
 		t.Fatalf("unexpected pod identity: %v", pod)
+	}
+	var demoConfig map[string]any
+	for _, raw := range pod["initContainers"].([]any) {
+		candidate := raw.(map[string]any)
+		if candidate["name"] == "demo-config" {
+			demoConfig = candidate
+		}
+	}
+	if demoConfig == nil {
+		t.Fatal("demo setup init container is missing")
+	}
+	demoCommand, _ := json.Marshal(demoConfig["command"])
+	if !strings.Contains(string(demoCommand), "--no-overwrite-dir") {
+		t.Fatalf("demo extraction may not rewrite the mounted root directory mode: %s", demoCommand)
 	}
 	if !strings.Contains(string(data), `"name": "fullsend-gateway-demo"`) || !strings.Contains(string(data), "gateway-demo") {
 		t.Fatalf("demo bundle or command missing: %s", data)
@@ -150,6 +166,90 @@ func TestGatewayAttemptJobsBindDurableIdentity(t *testing.T) {
 	}
 	if _, err := GatewayAttemptCleanupJob(name, image, 0); err == nil {
 		t.Fatal("accepted zero attempt ID")
+	}
+}
+
+func TestGatewayJiraTriageAttemptUsesPinnedEventAndInferenceIdentity(t *testing.T) {
+	image := "localhost/fullsend-poc-runner:abcdef123456-0123456789abcdef"
+	configBytes, err := json.Marshal(LiveConfig{
+		JiraBaseURL: "https://stage.example", Project: "FSENDAI", Label: "fullsend-dispatcher-test", Repo: "owner/repo",
+		Harnesses:         []LiveHarness{{Name: "triage", Role: "triage", Trigger: `event.transition.kind == "opened"`}},
+		FullsendHarnesses: []string{"triage"}, RepoBundle: "fullsend-live-repo-abcdef0123456789", RepoRevision: strings.Repeat("a", 40),
+		GCPAudience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider", VertexProject: "vertex-project",
+	})
+	a := attempt{
+		id: 19, runID: 31, name: "fs-poc-31-1", harness: "triage", execution: "fullsend",
+		source: "jira:FSENDAI:fullsend-dispatcher-test", eventPayload: []byte(validTestJiraEventPayload),
+		configContent: configBytes,
+	}
+	data, err := GatewayJiraTriageAttemptJob(a, image, 123456789)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var job map[string]any
+	if err := json.Unmarshal(data, &job); err != nil {
+		t.Fatal(err)
+	}
+	labels := job["metadata"].(map[string]any)["labels"].(map[string]any)
+	if labels["fullsend.ai/attempt"] != "19" || labels["fullsend.ai/gateway-job"] != "demo" {
+		t.Fatalf("real triage Job has incorrect durable attempt labels: %v", labels)
+	}
+	pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	if pod["serviceAccountName"] != "fs-repo-123456789-triage" || pod["automountServiceAccountToken"] != false {
+		t.Fatalf("unexpected inference runner identity: %v", pod)
+	}
+	var repoConfig map[string]any
+	for _, raw := range pod["initContainers"].([]any) {
+		candidate := raw.(map[string]any)
+		if candidate["name"] == "repo-config" {
+			repoConfig = candidate
+		}
+	}
+	if repoConfig == nil {
+		t.Fatal("repository setup init container is missing")
+	}
+	repoCommand, _ := json.Marshal(repoConfig["command"])
+	if !strings.Contains(string(repoCommand), "--no-overwrite-dir") || !strings.Contains(string(repoCommand), "safe.directory=/repo") {
+		t.Fatalf("repository setup must preserve the mounted root directory mode and trust only its fixed Git directory: %s", repoCommand)
+	}
+	container := pod["containers"].([]any)[0].(map[string]any)
+	var workItemURL string
+	for _, raw := range container["env"].([]any) {
+		entry := raw.(map[string]any)
+		if entry["name"] == "FULLSEND_WORK_ITEM_URL" {
+			workItemURL, _ = entry["value"].(string)
+		}
+	}
+	if workItemURL != "https://stage.example/browse/FSENDAI-123" {
+		t.Fatalf("runner work item URL = %q", workItemURL)
+	}
+	command, _ := json.Marshal(container["command"])
+	if !strings.Contains(string(command), "triage") || !strings.Contains(string(command), "event.json") || !strings.Contains(string(command), "--keep-sandbox") {
+		t.Fatalf("runner command does not invoke the real harness with the event: %s", command)
+	}
+	jobText := string(data)
+	for _, required := range []string{"fullsend-live-repo-abcdef0123456789", "fullsend-event-31", "fs-repo-123456789-triage", "fullsend-k8s-mint", "JIRA_TOKEN", "run-live-fullsend.sh", "triage"} {
+		if !strings.Contains(jobText, required) {
+			t.Fatalf("real triage Job is missing %q: %s", required, jobText)
+		}
+	}
+	if strings.Contains(jobText, "selected Jira body") || !strings.Contains(jobText, "event.json") {
+		t.Fatalf("event content must be mounted from the durable selected run: %s", jobText)
+	}
+	if _, err := GatewayJiraTriageAttemptJob(attempt{id: 19, runID: 31, name: "fs-poc-31-1", harness: "triage", execution: "fullsend", source: "fixture-source", configContent: a.configContent, eventPayload: []byte("{}")}, image, 123456789); err == nil {
+		t.Fatal("accepted non-Jira source")
+	}
+	for name, payload := range map[string][]byte{
+		"invalid normalized event": []byte(`{"source":{"system":"jira"}}`),
+		"mismatched Jira URL":      []byte(strings.Replace(validTestJiraEventPayload, "https://stage.example", "https://other.example", 1)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := a
+			invalid.eventPayload = payload
+			if _, err := GatewayJiraTriageAttemptJob(invalid, image, 123456789); err == nil {
+				t.Fatal("accepted invalid normalized Jira event")
+			}
+		})
 	}
 }
 

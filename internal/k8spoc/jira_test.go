@@ -112,7 +112,7 @@ func TestLiveJiraDiscoverySelectionReplayAndRevision(t *testing.T) {
 		return jira.Issue{ID: id, Key: key, Fields: jira.IssueFields{Created: stamp(-time.Minute), Updated: stamp(-time.Minute), Labels: []string{"fullsend-dispatcher-test"}, Reporter: u}}
 	}
 	fake := &liveFakeJira{issues: []jira.Issue{issue("1", "FSENDAI-1", "writer"), issue("2", "FSENDAI-2", "outsider")}, comments: map[string][]jira.Comment{}, roles: map[string]bool{"writer": true}}
-	cfg := LiveConfig{JiraBaseURL: "https://jira.example", Project: "FSENDAI", Label: "fullsend-dispatcher-test", Repo: "owner/repo", Harnesses: []LiveHarness{{Name: "triage", Role: "triage", Trigger: `event.transition.kind == "opened"`}}}
+	cfg := LiveConfig{JiraBaseURL: "https://jira.example", Project: "FSENDAI", Label: "fullsend-dispatcher-test", Repo: "owner/repo", Harnesses: []LiveHarness{{Name: "triage", Role: "triage", Trigger: `event.transition.kind == "opened"`}}, FullsendHarnesses: []string{"triage"}, RepoBundle: "fullsend-live-repo-0123456789abcdef", RepoRevision: strings.Repeat("a", 40), GCPAudience: "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/provider", VertexProject: "vertex-project"}
 	poll := func() {
 		t.Helper()
 		raw, err := json.Marshal(cfg)
@@ -161,6 +161,11 @@ func TestLiveJiraDiscoverySelectionReplayAndRevision(t *testing.T) {
 	t.Setenv("JIRA_TOKEN_FILE", "")
 	selectAll()
 	counts(2, 1, 1)
+	var execution string
+	var payload []byte
+	if err := conn.QueryRow(ctx, `SELECT execution,event_payload FROM selected_runs ORDER BY id LIMIT 1`).Scan(&execution, &payload); err != nil || execution != "fullsend" || !json.Valid(payload) || !strings.Contains(string(payload), `"entity"`) {
+		t.Fatalf("selected run did not retain its real-run event: execution=%q payload=%s err=%v", execution, payload, err)
+	}
 	poll()
 	selectAll()
 	counts(2, 1, 1)
@@ -338,6 +343,65 @@ func TestPrepareLiveConfig(t *testing.T) {
 	}
 	if err := call("owner/repo"); err == nil {
 		t.Fatal("activated partial harness revision")
+	}
+}
+
+func TestPrepareLiveConfigOptInAndSchemaMigration(t *testing.T) {
+	ctx, conn := liveDB(t)
+	if _, err := conn.Exec(ctx, `ALTER TABLE selected_runs DROP COLUMN event_payload`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `ALTER TABLE selected_runs DROP COLUMN execution`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `UPDATE schema_versions SET version=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := conn.QueryRow(ctx, `SELECT version FROM schema_versions`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("schema version = %d, err=%v", version, err)
+	}
+	dir := t.TempDir()
+	repoDir := filepath.Join(dir, "repo")
+	configDir := filepath.Join(repoDir, ".fullsend")
+	if err := os.MkdirAll(filepath.Join(configDir, "harness"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(dir, "repos.yaml")
+	if err := os.WriteFile(manifest, []byte("version: 1\ngithub:\n  repos:\n    - name: owner/repo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - name: triage\n    source: harness/triage.yaml\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "harness", "triage.yaml"), []byte("agent: triage\nrole: triage\ntrigger: 'event.transition.kind == \"opened\"'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("K8S_POC_FULLSEND_HARNESSES", "triage")
+	t.Setenv("K8S_POC_REPO_BUNDLE", "fullsend-live-repo-0123456789abcdef")
+	t.Setenv("K8S_POC_REPO_REVISION", strings.Repeat("b", 40))
+	t.Setenv("K8S_POC_GCP_AUDIENCE", "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/provider")
+	t.Setenv("K8S_POC_VERTEX_PROJECT", "vertex-project")
+	output := filepath.Join(dir, "live.json")
+	if err := PrepareLiveConfig(context.Background(), manifest, repoDir, "owner/repo", "https://jira.example", "FSENDAI", "fullsend-dispatcher-test", output); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, _, err := readLiveConfig(output)
+	if err != nil || len(cfg.FullsendHarnesses) != 1 || cfg.FullsendHarnesses[0] != "triage" || cfg.RepoBundle == "" {
+		t.Fatalf("real-run snapshot = %+v, err=%v", cfg, err)
+	}
+}
+
+func TestSplitConfigList(t *testing.T) {
+	if got := splitConfigList(" "); got != nil {
+		t.Fatalf("empty list = %#v", got)
+	}
+	got := splitConfigList(" triage, coder ")
+	if len(got) != 2 || got[0] != "triage" || got[1] != "coder" {
+		t.Fatalf("split config list = %#v", got)
 	}
 }
 

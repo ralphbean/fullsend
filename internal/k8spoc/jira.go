@@ -20,18 +20,25 @@ import (
 )
 
 var (
-	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
-	labelPattern      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$`)
-	repoPattern       = regexp.MustCompile(`^[^/\s]+/[^/\s]+$`)
+	projectKeyPattern  = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
+	labelPattern       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$`)
+	repoPattern        = regexp.MustCompile(`^[^/\s]+/[^/\s]+$`)
+	gitRevisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	repoBundlePattern  = regexp.MustCompile(`^fullsend-live-repo-[0-9a-f]{16}$`)
 )
 
 // LiveConfig is the validated, immutable selection snapshot for one Jira source.
 type LiveConfig struct {
-	JiraBaseURL string        `json:"jira_base_url"`
-	Project     string        `json:"project"`
-	Label       string        `json:"label"`
-	Repo        string        `json:"repo"`
-	Harnesses   []LiveHarness `json:"harnesses"`
+	JiraBaseURL       string        `json:"jira_base_url"`
+	Project           string        `json:"project"`
+	Label             string        `json:"label"`
+	Repo              string        `json:"repo"`
+	Harnesses         []LiveHarness `json:"harnesses"`
+	FullsendHarnesses []string      `json:"fullsend_harnesses,omitempty"`
+	RepoBundle        string        `json:"repo_bundle,omitempty"`
+	RepoRevision      string        `json:"repo_revision,omitempty"`
+	GCPAudience       string        `json:"gcp_audience,omitempty"`
+	VertexProject     string        `json:"vertex_project,omitempty"`
 }
 
 // LiveHarness is a validated projection of a repository harness used by the stub runner.
@@ -76,6 +83,21 @@ func (c LiveConfig) validate() error {
 			return fmt.Errorf("harness %s trigger: %w", h.Name, err)
 		}
 		seen[h.Name] = true
+	}
+	seenFullsend := make(map[string]bool, len(c.FullsendHarnesses))
+	for _, name := range c.FullsendHarnesses {
+		if !seen[name] || seenFullsend[name] || name != "triage" {
+			return fmt.Errorf("live config opts into an unknown or duplicate Fullsend harness %q", name)
+		}
+		seenFullsend[name] = true
+	}
+	if len(c.FullsendHarnesses) > 0 {
+		if !repoBundlePattern.MatchString(c.RepoBundle) || !gitRevisionPattern.MatchString(c.RepoRevision) {
+			return fmt.Errorf("real Fullsend execution requires a pinned repository bundle and revision")
+		}
+		if c.GCPAudience == "" || !strings.HasPrefix(c.GCPAudience, "//iam.googleapis.com/projects/") || c.VertexProject == "" {
+			return fmt.Errorf("real Fullsend execution requires configured GCP workload identity and Vertex project")
+		}
 	}
 	return nil
 }

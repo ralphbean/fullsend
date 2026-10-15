@@ -161,7 +161,18 @@ func (k *kubeClient) create(ctx context.Context, a attempt) (kubeJob, error) {
 	if isGatewayAttempt(a) {
 		var data []byte
 		var err error
-		if k.mintRepositoryID > 0 {
+		if a.execution == "fullsend" {
+			if k.mintRepositoryID <= 0 {
+				return job, fmt.Errorf("real Jira triage requires its registered repository mint identity")
+			}
+			data, err = GatewayJiraTriageAttemptJob(a, k.gatewayImage, k.mintRepositoryID)
+			if err == nil {
+				err = k.ensureJiraEventConfigMap(ctx, a)
+			}
+			if err == nil {
+				err = k.ensureMintServiceAccount(ctx, k.mintRepositoryID, gatewayDemoRole)
+			}
+		} else if k.mintRepositoryID > 0 {
 			data, err = GatewayAttemptMintJob(a.name, k.gatewayImage, a.id, k.mintRepositoryID, gatewayDemoRole, kubernetesMintServiceURL)
 		} else {
 			data, err = GatewayAttemptJob(a.name, k.gatewayImage, a.id)
@@ -180,6 +191,49 @@ func (k *kubeClient) create(ctx context.Context, a attempt) (kubeJob, error) {
 	}
 	_, err := k.request(ctx, "POST", "/apis/batch/v1/namespaces/"+k.namespace+"/jobs", body, &job)
 	return job, err
+}
+
+func (k *kubeClient) ensureJiraEventConfigMap(ctx context.Context, a attempt) error {
+	if a.runID < 1 || !json.Valid(a.eventPayload) || len(a.eventPayload) > 16*1024 {
+		return fmt.Errorf("invalid durable Jira event for attempt %d", a.id)
+	}
+	name := fmt.Sprintf("fullsend-event-%d", a.runID)
+	path := "/api/v1/namespaces/" + k.namespace + "/configmaps"
+	body := map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata":  map[string]any{"name": name, "namespace": k.namespace, "labels": map[string]string{"app.kubernetes.io/part-of": "fullsend-kind-poc", "fullsend.ai/run": fmt.Sprint(a.runID)}},
+		"data":      map[string]string{"event.json": string(a.eventPayload)},
+		"immutable": true,
+	}
+	_, err := k.request(ctx, "POST", path, body, nil)
+	if err == nil {
+		return nil
+	}
+	if !strings.Contains(err.Error(), " 409 ") {
+		return err
+	}
+	var existing struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Data map[string]string `json:"data"`
+	}
+	status, getErr := k.request(ctx, "GET", path+"/"+name, nil, &existing)
+	if getErr != nil || status != http.StatusOK || existing.Metadata.Name != name || existing.Data["event.json"] != string(a.eventPayload) {
+		return fmt.Errorf("existing Jira event ConfigMap %s conflicts with the selected run", name)
+	}
+	return nil
+}
+
+func (k *kubeClient) deleteJiraEventConfigMap(ctx context.Context, runID int64) error {
+	if runID < 1 {
+		return fmt.Errorf("run ID must be positive")
+	}
+	_, err := k.request(ctx, "DELETE", "/api/v1/namespaces/"+k.namespace+"/configmaps/"+fmt.Sprintf("fullsend-event-%d", runID), map[string]any{"apiVersion": "v1", "kind": "DeleteOptions"}, nil)
+	if err != nil && strings.Contains(err.Error(), " 404 ") {
+		return nil
+	}
+	return err
 }
 
 type kubeServiceAccount struct {
@@ -262,7 +316,7 @@ func (k *kubeClient) createGatewayCleanup(ctx context.Context, a attempt) (kubeJ
 }
 
 func isGatewayAttempt(a attempt) bool {
-	return a.harness == "gateway-demo" && a.source == "fixture-source"
+	return (a.harness == "gateway-demo" && a.source == "fixture-source") || (a.harness == "triage" && a.execution == "fullsend" && strings.HasPrefix(a.source, "jira:"))
 }
 
 func cleanupJobName(name string) string {

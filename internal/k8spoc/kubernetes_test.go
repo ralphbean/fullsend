@@ -85,6 +85,151 @@ func TestConfigureMintRepositoryID(t *testing.T) {
 	}
 }
 
+func TestEnsureJiraEventConfigMapLifecycle(t *testing.T) {
+	event := []byte(`{"source":{"system":"jira"}}`)
+	var posted map[string]any
+	deleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+		case http.MethodDelete:
+			if deleted {
+				http.NotFound(w, r)
+				return
+			}
+			deleted = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	k := &kubeClient{client: server.Client(), host: server.URL, namespace: "fullsend-runner"}
+	a := attempt{id: 1, runID: 42, eventPayload: event}
+	if err := k.ensureJiraEventConfigMap(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	data := posted["data"].(map[string]any)
+	if posted["kind"] != "ConfigMap" || posted["immutable"] != true || posted["metadata"].(map[string]any)["name"] != "fullsend-event-42" || data["event.json"] != string(event) {
+		t.Fatalf("unexpected event ConfigMap: %v", posted)
+	}
+	if err := k.deleteJiraEventConfigMap(context.Background(), a.runID); err != nil || !deleted {
+		t.Fatalf("event ConfigMap deletion: deleted=%v err=%v", deleted, err)
+	}
+	if err := k.ensureJiraEventConfigMap(context.Background(), attempt{id: 2, runID: 42, eventPayload: []byte("not-json")}); err == nil {
+		t.Fatal("accepted invalid event JSON")
+	}
+	missing := &kubeClient{client: server.Client(), host: server.URL, namespace: "fullsend-runner"}
+	if err := missing.deleteJiraEventConfigMap(context.Background(), 42); err != nil {
+		t.Fatal("deleting an already absent event ConfigMap should be idempotent:", err)
+	}
+}
+
+func TestEnsureJiraEventConfigMapConflicts(t *testing.T) {
+	event := `{"source":{"system":"jira"}}`
+	for _, tc := range []struct {
+		name    string
+		stored  string
+		wantErr bool
+	}{{name: "same event is idempotent", stored: event}, {name: "conflicting event is rejected", stored: `{"source":{"system":"other"}}`, wantErr: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					w.WriteHeader(http.StatusConflict)
+					return
+				}
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]string{"name": "fullsend-event-42"}, "data": map[string]string{"event.json": tc.stored}})
+					return
+				}
+				http.NotFound(w, r)
+			}))
+			defer server.Close()
+			k := &kubeClient{client: server.Client(), host: server.URL, namespace: "fullsend-runner"}
+			err := k.ensureJiraEventConfigMap(context.Background(), attempt{runID: 42, eventPayload: []byte(event)})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ensureJiraEventConfigMap error=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestKubernetesCreateRealJiraTriageJob(t *testing.T) {
+	configBytes, err := json.Marshal(LiveConfig{
+		JiraBaseURL: "https://stage.example", Project: "FSENDAI", Label: "fullsend-dispatcher-test", Repo: "owner/repo",
+		Harnesses:         []LiveHarness{{Name: "triage", Role: "triage", Trigger: `event.transition.kind == "opened"`}},
+		FullsendHarnesses: []string{"triage"}, RepoBundle: "fullsend-live-repo-abcdef0123456789", RepoRevision: strings.Repeat("a", 40),
+		GCPAudience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider", VertexProject: "vertex-project",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := attempt{id: 2, runID: 42, name: "fs-poc-42-1", harness: "triage", execution: "fullsend", source: "jira:FSENDAI:fullsend-dispatcher-test", eventPayload: []byte(validTestJiraEventPayload), configContent: configBytes}
+	var postedConfig, postedJob map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/namespaces/fullsend-runner/serviceaccounts/fs-repo-123456789-triage" && r.Method == http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Path == "/api/v1/namespaces/fullsend-runner/serviceaccounts" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		if r.URL.Path == "/api/v1/namespaces/fullsend-runner/configmaps" {
+			if err := json.NewDecoder(r.Body).Decode(&postedConfig); err != nil {
+				t.Error(err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		if r.URL.Path == "/apis/batch/v1/namespaces/fullsend-runner/jobs" {
+			if err := json.NewDecoder(r.Body).Decode(&postedJob); err != nil {
+				t.Error(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"metadata":{"name":"fs-poc-42-1","uid":"uid"}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	k := &kubeClient{client: server.Client(), host: server.URL, namespace: "fullsend-runner", image: "busybox:1.36.1", gatewayImage: "localhost/fullsend-poc-runner:abcdef123456-0123456789abcdef", mintRepositoryID: 123456789}
+	if _, err = k.create(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if postedConfig == nil || postedJob == nil {
+		t.Fatal("expected event ConfigMap and real runner Job")
+	}
+	pod := postedJob["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	if pod["serviceAccountName"] != "fs-repo-123456789-triage" {
+		t.Fatalf("runner service account = %v", pod["serviceAccountName"])
+	}
+	if !strings.Contains(string(mustJSON(t, postedJob)), "fullsend-event-42") || !strings.Contains(string(mustJSON(t, postedJob)), "JIRA_TOKEN") {
+		t.Fatal("real Job is missing its durable event or host-side Jira credentials")
+	}
+	container := pod["containers"].([]any)[0].(map[string]any)
+	for _, raw := range container["env"].([]any) {
+		entry := raw.(map[string]any)
+		if entry["name"] == "FULLSEND_WORK_ITEM_URL" && entry["value"] == "https://stage.example/browse/FSENDAI-123" {
+			return
+		}
+	}
+	t.Fatal("real Jira Job is missing the selected issue URL")
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	b, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestEnsureMintServiceAccount(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string

@@ -276,6 +276,61 @@ func TestGatewayAttemptKeepsReservationUntilIndependentStop(t *testing.T) {
 	}
 }
 
+func TestRealJiraAttemptDeletesEventAfterVerifiedCleanup(t *testing.T) {
+	ctx, conn := liveDB(t)
+	config, _ := json.Marshal(LiveConfig{JiraBaseURL: "https://stage.example", Project: "FSENDAI", Label: "fullsend-dispatcher-test", Repo: "owner/repo", Harnesses: []LiveHarness{{Name: "triage", Role: "triage", Trigger: `event.transition.kind == "opened"`}}, FullsendHarnesses: []string{"triage"}, RepoBundle: "fullsend-live-repo-0123456789abcdef", RepoRevision: strings.Repeat("a", 40), GCPAudience: "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/provider", VertexProject: "vertex-project"})
+	if _, err := conn.Exec(ctx, `INSERT INTO config_revisions(digest,content) VALUES('real-jira-config',$1)`, config); err != nil {
+		t.Fatal(err)
+	}
+	var observationID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO observations(tenant,source,observation_key,entity,revision,kind,behavior,authorized,config_digest) VALUES('owner/repo','jira:FSENDAI:fullsend-dispatcher-test','one','FSENDAI-1','r1','opened','success',true,'real-jira-config') RETURNING id`).Scan(&observationID); err != nil {
+		t.Fatal(err)
+	}
+	var runID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO selected_runs(observation_id,harness,execution,event_payload,state) VALUES($1,'triage','fullsend','{"source":{"system":"jira"}}','reserved') RETURNING id`, observationID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	var attemptID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO attempts(run_id,number,job_name,job_uid,state) VALUES($1,1,'fs-poc-77-1','runner-uid','active') RETURNING id`, runID).Scan(&attemptID); err != nil {
+		t.Fatal(err)
+	}
+	deletedEvent := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/configmaps/fullsend-event-") && r.Method == http.MethodDelete {
+			deletedEvent++
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/jobs/fs-clean-") && r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"metadata":{"name":"fs-clean-77-1","labels":{"fullsend.ai/attempt":"%d","fullsend.ai/gateway-job":"attempt-cleanup"}},"status":{"succeeded":1}}`, attemptID)))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/jobs/fs-poc-") && r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	k := &kubeClient{client: server.Client(), host: server.URL, namespace: "fullsend-runner"}
+	a := attempt{id: attemptID, runID: runID, name: "fs-poc-77-1", uid: "runner-uid", state: "active", source: "jira:FSENDAI:fullsend-dispatcher-test", harness: "triage", execution: "fullsend"}
+	var job kubeJob
+	job.Metadata.Name, job.Metadata.UID = a.name, a.uid
+	job.Metadata.Labels = map[string]string{"fullsend.ai/attempt": fmt.Sprint(attemptID), "fullsend.ai/gateway-job": "demo"}
+	job.Status.Succeeded = 1
+	if err := reconcileGatewayAttempt(ctx, conn, k, a, job, true); err != nil {
+		t.Fatal(err)
+	}
+	a.state = "cleanup"
+	if err := reconcileGatewayAttempt(ctx, conn, k, a, kubeJob{}, false); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err := conn.QueryRow(ctx, `SELECT state FROM selected_runs WHERE id=$1`, runID).Scan(&state); err != nil || state != "succeeded" || deletedEvent != 2 {
+		t.Fatalf("cleanup result state=%q event-deletes=%d err=%v", state, deletedEvent, err)
+	}
+}
+
 func TestDurableFixtureCycle(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
