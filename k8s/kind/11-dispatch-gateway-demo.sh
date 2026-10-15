@@ -99,7 +99,9 @@ for cycle in {1..160}; do
   fi
   if [[ "$state" == succeeded && "$cleanup_state" == 'done' ]]; then
     cleanup_job="fs-clean-${job_name#fs-poc-}"
-    k -n fullsend-runner get "job/$cleanup_job" -o jsonpath='{.status.succeeded}' | rg -qx 1 || fail 'Remote cleanup Job did not succeed'
+    cleanup_job_succeeded="$(k -n fullsend-runner get "job/$cleanup_job" -o jsonpath='{.status.succeeded}')" \
+      || fail "Could not inspect remote cleanup Job $cleanup_job"
+    [[ "$cleanup_job_succeeded" == 1 ]] || fail "Remote cleanup Job $cleanup_job did not succeed"
     status '✅' "Gateway demo succeeded; $cleanup_job verified remote stop before reservation release"
     status 'ℹ️' "Runner logs: kubectl --kubeconfig $KUBECONFIG_POC --context $KIND_CONTEXT -n fullsend-runner logs job/$job_name -c runner (Job may already be deleted)"
     exit 0
