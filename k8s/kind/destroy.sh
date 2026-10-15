@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
-profile_arg "$@"
+
+force_cleanup=false
+profile_args=()
+while (($#)); do
+  case "$1" in
+    --force)
+      force_cleanup=true
+      shift
+      ;;
+    --profile)
+      [[ "$#" -ge 2 ]] || fail "Usage: $0 [--profile fixture|live] [--force]"
+      profile_args+=("$1" "$2")
+      shift 2
+      ;;
+    *)
+      fail "Usage: $0 [--profile fixture|live] [--force]"
+      ;;
+  esac
+done
+[[ "${#profile_args[@]}" -le 2 ]] || fail "Usage: $0 [--profile fixture|live] [--force]"
+profile_arg "${profile_args[@]}"
 require_owned
 
 ensure_gateway_cleanup_secrets() {
@@ -85,32 +105,37 @@ ensure_gateway_cleanup_secrets() {
     || fail 'Gateway cleanup Secrets are still unavailable; refusing to destroy the cluster'
 }
 
-ensure_gateway_cleanup_secrets
-
-# The cleanup Job runs inside kind and needs the same runner image that probe
-# and demo Jobs used. A reset can leave the image on the host but not in the
-# node, so always load the resolved image before asking the cluster to use it.
-runner_image=''
-if [[ -s "$STATE_DIR/gateway-runner-image" ]]; then
-  runner_image="$(cat "$STATE_DIR/gateway-runner-image")"
+if [[ "$force_cleanup" == true ]]; then
+  status '⚠️' '--force skips remote sandbox cleanup; remote sandboxes may remain after the local cluster is deleted'
 else
-  runner_image="$(k -n fullsend-runner get jobs -l 'fullsend.ai/gateway-job' \
-    -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
-fi
-if [[ -n "$runner_image" ]]; then
-  if [[ ! -s "$STATE_DIR/gateway-runner-image" ]]; then
-    printf '%s\n' "$runner_image" > "$STATE_DIR/gateway-runner-image"
-  fi
-  if podman image exists "$runner_image" >/dev/null 2>&1; then
-    status '🔧' "Loading gateway cleanup runner image $runner_image into kind"
-    kind load docker-image "$runner_image" --name "$KIND_NAME"
+  ensure_gateway_cleanup_secrets
+
+  # The cleanup Job runs inside kind and needs the same runner image that probe
+  # and demo Jobs used. A reset can leave the image on the host but not in the
+  # node, so always load the resolved image before asking the cluster to use it.
+  runner_image=''
+  if [[ -s "$STATE_DIR/gateway-runner-image" ]]; then
+    runner_image="$(cat "$STATE_DIR/gateway-runner-image")"
   else
-    status '🔧' "Gateway cleanup runner image $runner_image is missing locally; building it from this checkout"
-    build_gateway_runner
+    runner_image="$(k -n fullsend-runner get jobs -l 'fullsend.ai/gateway-job' \
+      -o jsonpath='{.items[0].spec.template.spec.containers[0].image}')"
   fi
+  if [[ -n "$runner_image" ]]; then
+    if [[ ! -s "$STATE_DIR/gateway-runner-image" ]]; then
+      printf '%s\n' "$runner_image" > "$STATE_DIR/gateway-runner-image"
+    fi
+    if podman image exists "$runner_image" >/dev/null 2>&1; then
+      status '🔧' "Loading gateway cleanup runner image $runner_image into kind"
+      kind load docker-image "$runner_image" --name "$KIND_NAME"
+    else
+      status '🔧' "Gateway cleanup runner image $runner_image is missing locally; building it from this checkout"
+      build_gateway_runner
+    fi
+  fi
+
+  "$K8S_ROOT/kind/08-gateway-cleanup.sh" --profile "$PROFILE"
 fi
 
-"$K8S_ROOT/kind/08-gateway-cleanup.sh" --profile "$PROFILE"
 status '🔧' 'Deleting owned kind cluster'
 kind delete cluster --name "$KIND_NAME" --kubeconfig "$KUBECONFIG_POC"
 rm -f "$STATE_DIR/cluster-owned" "$KUBECONFIG_POC"
