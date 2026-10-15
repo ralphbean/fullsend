@@ -19,6 +19,10 @@ Observed through 2026-10-09. This is the implementation and verification status 
 
 Kubernetes Job lifecycle management may instead be a separate K8s-specific command and code scope, invoked by the same dispatch CronJob if useful but separate from the `fullsend dispatch` invocation. The exact command boundary and database interfaces remain design work. The current PoC intentionally takes shortcuts here; **do not use its structure as the implementation template.**
 
+### Major compatibility caveat: OpenShell client and HyperShell gateway
+
+Fullsend's run path shells out to an `openshell` binary supplied by its execution environment; it does not negotiate a client version with the gateway. The verified HyperShell path depends on the host preflight and runner image using the compatible `0.1.2-rhaiv.0` client. The PoC layers that client over the checkout-built runner and rejects a different host version. This is an integration constraint of this gateway setup, not a general guarantee that Fullsend's standard runner image works with HyperShell. Recheck the exact client/gateway pairing if either side changes.
+
 ### Milestones 1–3
 
 - [RESULTS.md](RESULTS.md) records the two milestone 1 resets, fixture smoke results, persistence checks, and milestone 2 database tests. The fixture loop used stub Jobs. Some recovery cases were exercised by an API simulator rather than a killed process in kind.
