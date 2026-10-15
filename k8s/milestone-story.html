@@ -298,7 +298,7 @@ LEFT JOIN attempts a ON a.run_id = r.id
 WHERE o.source LIKE $$jira:%$$
 ORDER BY o.id DESC, a.number DESC
 LIMIT 10;'</code></pre></div>
-            <div class="explore-step"><h4>4. Reproduce the controlled real-triage path (opt-in)</h4><p>After the private mint, gateway, and WIF prerequisites are configured, set <code>fullsend_harnesses</code> to <code>["triage"]</code>, add a <code>/fs-triage</code> comment to the controlled stage issue, then trigger one poll and dispatch cycle.</p><pre><code>k8s/kind/06-live-smoke.sh --profile live</code></pre><p class="explore-note">This runs real Fullsend triage, writes the <code>triaged</code> label and response comment to Jira, and can incur Vertex and gateway usage. Use only the controlled stage repository and issue.</p></div>
+            <div class="explore-step"><h4>4. Reproduce the controlled real-triage path (opt-in)</h4><p>First create and install the GitHub App described in chapter 4, then configure the private mint, gateway, and WIF prerequisites. Set <code>fullsend_harnesses</code> to <code>["triage"]</code>, add a <code>/fs-triage</code> comment to the controlled stage issue, then trigger one poll and dispatch cycle.</p><pre><code>k8s/kind/06-live-smoke.sh --profile live</code></pre><p class="explore-note">This runs real Fullsend triage, writes the <code>triaged</code> label and response comment to Jira, and can incur Vertex and gateway usage. Use only the controlled stage repository and issue.</p></div>
           </section>
           <div class="chapter-nav"><button type="button" data-prev>← Previous</button><button type="button" data-next>Next chapter →</button></div>
         </section>
@@ -315,6 +315,18 @@ LIMIT 10;'</code></pre></div>
           <p class="evidence">Source trail: <a href="STATUS.md">gateway results and limitations</a><a href="README.md">gateway setup and recovery</a><a href="PLAN.md">milestone 4 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-4">
             <h3 id="explore-title-4">Explore this milestone</h3>
+            <div class="explore-step"><h4>Prerequisite: set up the HyperShell gateway</h4><p><code>deploy.sh</code> and the probe do not create the external gateway. This separate setup script logs into the management API (interactive device login on first use unless you provide a token file), creates or reuses the gateway and service account, saves the one-time client secret and OpenShell bundle under ignored <code>k8s/.local/gateway/</code>, and registers the gateway locally. Supply the management API URL and OIDC issuer; a new gateway also needs a request for a registered ManagedCluster. The probe later installs the saved bundle and secret into kind. If reusing an existing service account, its original client secret must already be saved locally because the API cannot retrieve it. See the <a href="README.md#hypershell-gateway-setup-and-probe">setup instructions</a>.</p><pre><code>export HYPERSHELL_GATEWAY_NAME="whatever"
+export SANDBOX_IMAGE='ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a'</code></pre><pre><code>k8s/kind/07-hypershell-setup.sh \
+  --api-url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL" \
+  --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
+  --gateway-request k8s/.local/gateway/request.json \
+  --cluster-name "$HYPERSHELL_CLUSTER_NAME" \
+  --service-account-name fullsend-poc</code></pre></div>
+            <div class="explore-step" id="github-app-prereq"><h4>Additional prerequisite for real triage: create and install a GitHub App</h4><p>This is not needed for the gateway probe or fixture demo. It is needed for the opt-in live triage path in chapter 3 and the repository identity walkthrough in chapter 5. Create a private app under your personal GitHub account from <a href="https://github.com/settings/apps/new">New GitHub App</a>; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app">registration guide</a>. Grant repository <strong>Contents: read-only</strong> and <strong>Issues: read and write</strong>; Metadata read is enabled by default. This PoC does not use GitHub App webhook events.</p><p>Choose <em>Install App</em> and install it on only the repository you own that is configured for the live profile. The current example is <code>ralphbean/jira-triage-test</code>; if you use a different repository, update the live repo configuration and mint allowlist to match. GitHub's <a href="https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app">installation guide</a> describes the flow.</p><p>Find <code>GITHUB_APP_ID</code> on the app's <em>General</em> settings page. Find <code>GITHUB_APP_INSTALLATION_ID</code> at the end of the installation's <em>Configure</em> page URL under account Settings → Applications → Installed GitHub Apps. Use the repository's <code>OWNER/REPOSITORY</code> for <code>GITHUB_REPOSITORY</code>. Generate and download a PEM from the app's <em>Private keys</em> settings, then set <code>GITHUB_APP_PRIVATE_KEY_FILE</code> to its local path. Keep the PEM private and out of the repository; see GitHub's <a href="https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps">private key guide</a>.</p><p>With <code>gh</code> authenticated for that repository, read its immutable numeric ID and set the variables used by chapters 3 and 5:</p><pre><code>export GITHUB_APP_ID='APP_ID_FROM_GENERAL_SETTINGS'
+export GITHUB_APP_INSTALLATION_ID='ID_AT_END_OF_INSTALLATION_URL'
+export GITHUB_REPOSITORY='OWNER/REPOSITORY'
+export GITHUB_REPOSITORY_ID="$(gh api "repos/$GITHUB_REPOSITORY" --jq .id)"
+export GITHUB_APP_PRIVATE_KEY_FILE="$HOME/path/to/downloaded-private-key.pem"</code></pre></div>
             <div class="explore-step"><h4>1. Probe the dedicated gateway transport</h4><p>With the OIDC gateway registration, mode-600 client secret, and digest-pinned sandbox image prepared, the probe transfers files and verifies remote deletion.</p><pre><code>k8s/kind/07-gateway-probe.sh \
   --gateway-bundle k8s/.local/gateway/openshell \
   --gateway-name "$HYPERSHELL_GATEWAY_NAME" \
@@ -347,7 +359,12 @@ kubectl --kubeconfig k8s/.local/kubeconfig --context kind-fullsend-poc -n fullse
           <p class="evidence">Source trail: <a href="STATUS.md">mint implementation and live evidence</a><a href="README.md">runner identity boundary</a><a href="PLAN.md">milestone 5 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-5">
             <h3 id="explore-title-5">Explore this milestone</h3>
-            <div class="explore-step"><h4>1. Deploy the private mint for a test repository</h4><p>Export these shell variables from an App installation with access to the repository. Keep the PEM in a private local file; the script mounts it only into the mint Pod.</p><pre><code>k8s/kind/13-deploy-private-mint.sh \
+            <div class="explore-step"><h4>Before you start: set the repository App variables</h4><p>Replace these placeholders with values from a GitHub App installation that can access your test repository. Keep the PEM in a private local file; the script mounts it only into the mint Pod.</p><pre><code>export GITHUB_APP_ID='YOUR_APP_ID'
+export GITHUB_APP_INSTALLATION_ID='YOUR_INSTALLATION_ID'
+export GITHUB_REPOSITORY_ID='YOUR_NUMERIC_REPOSITORY_ID'
+export GITHUB_REPOSITORY='OWNER/REPOSITORY'
+export GITHUB_APP_PRIVATE_KEY_FILE="$HOME/path/to/private-key.pem"</code></pre></div>
+            <div class="explore-step"><h4>1. Deploy the private mint for a test repository</h4><pre><code>k8s/kind/13-deploy-private-mint.sh \
   --app-id "$GITHUB_APP_ID" \
   --installation-id "$GITHUB_APP_INSTALLATION_ID" \
   --repository-id "$GITHUB_REPOSITORY_ID" \
@@ -375,7 +392,12 @@ ls -lt k8s/.state | head</code></pre></div>
           <p class="evidence">Source trail: <a href="STATUS.md">WIF checks and caveats</a><a href="gcp/README.md">JWKS refresh and optional infrastructure</a><a href="PLAN.md">milestone 6 plan</a></p>
           <section class="explore" aria-labelledby="explore-title-6">
             <h3 id="explore-title-6">Explore this milestone</h3>
-            <div class="explore-step"><h4>1. Refresh public keys after a kind reset</h4><p>Set the variables in these commands to the existing project, pool, and provider. This updates public JWKS to match the current kind issuer; it does not create IAM resources or upload private signing material.</p><pre><code>k8s/kind/10-refresh-inference-wif.sh \
+            <div class="explore-step"><h4>Before you start: set the existing Google Cloud resource names</h4><p>Replace these placeholders with the project, pool, provider, and inference service account already configured for this PoC. These commands use those resources; they do not create them.</p><pre><code>export GCP_PROJECT_ID='your-project-id'
+export GCP_PROJECT_NUMBER='123456789012'
+export GCP_WIF_POOL='your-existing-pool'
+export GCP_WIF_PROVIDER='your-existing-provider'
+export GCP_INFERENCE_SERVICE_ACCOUNT='fullsend-inference@your-project-id.iam.gserviceaccount.com'</code></pre></div>
+            <div class="explore-step"><h4>1. Refresh public keys after a kind reset</h4><p>This updates public JWKS to match the current kind issuer; it does not create IAM resources or upload private signing material.</p><pre><code>k8s/kind/10-refresh-inference-wif.sh \
   --project "$GCP_PROJECT_ID" \
   --pool "$GCP_WIF_POOL" \
   --provider "$GCP_WIF_PROVIDER"</code></pre></div>
