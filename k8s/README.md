@@ -82,19 +82,19 @@ export HYPERSHELL_API_URL='https://api.hyp2.infra.hypershell.app/'
 export HYPERSHELL_ISSUER_URL='https://keycloak.hyp2.infra.hypershell.app/realms/hypershell'
 export HYPERSHELL_GATEWAY_NAME='whatever'
 HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"
-export HYPERSHELL_CLUSTER_ID="$(HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl list managedClusters --output json | jq -er '.items[0].id')"
+export HYPERSHELL_PLACEMENT_SELECTOR='["network/public","provider/ibm","runtime/release-check"]'
 mkdir -p k8s/.local/gateway
 cat > k8s/.local/gateway/request.json <<JSON
 {
   "name": "$HYPERSHELL_GATEWAY_NAME",
-  "cluster_id": "$HYPERSHELL_CLUSTER_ID",
+  "placement": {"selector": $HYPERSHELL_PLACEMENT_SELECTOR},
   "route": "{\"enabled\":true}"
 }
 JSON
 jq . k8s/.local/gateway/request.json
 ```
 
-The current managed API requires a registered ManagedCluster and rejects empty `cluster_id`; the pinned CLI's hub-default comment does not apply to this deployment. The current managed API also rejects `release_id` in gateway creation requests, despite that field appearing in the pinned `hsctl` CLI. Omit `--gateway-request` to reuse an existing gateway.
+The current managed API requires a `placement.selector` of capability labels; the pinned `hsctl` CLI's create-gateway flags predate this API, but `--body` sends the JSON request through unchanged. The selector above matches all three capabilities reported for the current `hyp2-hub` and distinguishes it from the other currently registered cluster. Placement is capability-based, not an exact cluster-ID pin: the API may choose any connected cluster matching every selector label. Inspect `hsctl list managedClusters --output json` and adjust the selector if your registered clusters differ. Do not include `cluster_id` or `release_id` in a create request. Omit `--gateway-request` to reuse an existing gateway.
 
 With console access only, the first run uses an interactive device login; `hsctl` then caches a refresh token in the ignored local config. For unattended first use, supply a private management bearer token file via `--token-file`. A gateway service account cannot authenticate to the management API. `openshell-user` also needs membership in the intended gateway workspace; choose `--role openshell-admin` only if that broader access is intended. For a console-created service account whose one-time credential was saved as a raw mode-600 secret, pass `--existing-client-secret-file` and, if its OpenShell registration has a separate local name, `--openshell-name`.
 

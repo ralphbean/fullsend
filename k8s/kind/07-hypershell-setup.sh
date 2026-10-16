@@ -4,12 +4,11 @@ source "$(dirname "$0")/lib.sh"
 script_start "$0"
 
 usage() {
-  fail "Usage: $0 --gateway-name NAME --service-account-name NAME [--gateway-request JSON] [--cluster-name NAME] [--api-url URL --issuer-url URL | --token-file FILE | --config FILE] [--role openshell-user|openshell-admin] [--existing-client-secret-file FILE] [--openshell-name NAME] [--hsctl-bin FILE] [--openshell-config DIR]"
+  fail "Usage: $0 --gateway-name NAME --service-account-name NAME [--gateway-request JSON] [--api-url URL --issuer-url URL | --token-file FILE | --config FILE] [--role openshell-user|openshell-admin] [--existing-client-secret-file FILE] [--openshell-name NAME] [--hsctl-bin FILE] [--openshell-config DIR]"
 }
 
 gateway_name=''
 request_file=''
-cluster_name=''
 service_account_name=''
 role=openshell-user
 api_url=''
@@ -24,7 +23,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --gateway-name) [[ $# -ge 2 ]] || usage; gateway_name="$2"; shift 2 ;;
     --gateway-request) [[ $# -ge 2 ]] || usage; request_file="$2"; shift 2 ;;
-    --cluster-name) [[ $# -ge 2 ]] || usage; cluster_name="$2"; shift 2 ;;
     --service-account-name) [[ $# -ge 2 ]] || usage; service_account_name="$2"; shift 2 ;;
     --role) [[ $# -ge 2 ]] || usage; role="$2"; shift 2 ;;
     --api-url) [[ $# -ge 2 ]] || usage; api_url="$2"; shift 2 ;;
@@ -41,7 +39,6 @@ done
 [[ -n "$gateway_name" && -n "$service_account_name" ]] || usage
 [[ "$gateway_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail 'Gateway name contains unsupported characters'
 [[ "$service_account_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail 'Service-account name contains unsupported characters'
-[[ -z "$cluster_name" || "$cluster_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail 'ManagedCluster name contains unsupported characters'
 openshell_name="${openshell_name:-$gateway_name}"
 [[ "$openshell_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail 'OpenShell registration name contains unsupported characters'
 [[ "$role" == openshell-user || "$role" == openshell-admin ]] || fail 'Unsupported service-account role'
@@ -58,9 +55,9 @@ if [[ ! -s "$config_file" && -z "$token_file" ]]; then
 fi
 if [[ -n "$request_file" && -s "$request_file" ]]; then
   jq -e --arg name "$gateway_name" \
-    '.name == $name and (.cluster_id | type == "string" and length > 0) and ((has("release_id") | not) or (.release_id | type == "string"))' \
+    '.name == $name and (.placement | type == "object" and ((has("mode") | not)) and (.selector | type == "array" and length > 0 and all(.[]; type == "string" and length > 0))) and (has("cluster_id") | not) and (has("release_id") | not)' \
     "$request_file" >/dev/null \
-    || fail 'Gateway request must contain matching name and a registered ManagedCluster ID in cluster_id'
+    || fail 'Gateway request must contain matching name and placement.selector with one or more capability labels; omit cluster_id and release_id'
 fi
 for tool in jq openshell; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
 [[ "$(openshell --version)" == 'openshell 0.1.2-rhaiv.0' ]] || fail 'OpenShell must be 0.1.2-rhaiv.0'
@@ -93,21 +90,23 @@ gateway_count="$(jq --arg name "$gateway_name" '[(.items // [])[] | select(.name
 [[ "$gateway_count" -le 1 ]] || fail "Multiple gateways named $gateway_name; refusing to choose one"
 if [[ "$gateway_count" == 0 ]]; then
   if [[ -z "$request_file" || ! -s "$request_file" ]]; then
-    status 'ℹ️' "Gateway $gateway_name is not registered; listing registered ManagedClusters so you can prepare its request"
+    status 'ℹ️' "Gateway $gateway_name is not registered; listing ManagedCluster placement capabilities so you can prepare its request"
     cluster_list="$("$hsctl_bin" list managedClusters --output json)" || fail 'Cannot list registered ManagedClusters'
     jq -e 'has("items") and (.items == null or (.items | type) == "array")' <<<"$cluster_list" >/dev/null \
       || fail 'ManagedCluster list response has no valid items field'
-    jq -r '(.items // [])[] | [.name // "", .id // ""] | @tsv' <<<"$cluster_list" >&2
+    jq -r '(.items // [])[] | [.name // "", ((.capabilities // []) | join(","))] | @tsv' <<<"$cluster_list" >&2
     request_path="${request_file:-$LOCAL_DIR/gateway/request.json}"
-    fail "Create $request_path with the gateway name and a registered cluster_id from the list above, then rerun with --gateway-request"
+    fail "Create $request_path with placement.selector labels from the intended cluster above, then rerun with --gateway-request; the API chooses a connected cluster matching all labels"
   fi
-  requested_cluster="$(jq -r '.cluster_id' "$request_file")"
+  requested_selector="$(jq -c '.placement.selector' "$request_file")"
   cluster_list="$("$hsctl_bin" list managedClusters --output json)" || fail 'Cannot list registered ManagedClusters'
   jq -e 'has("items") and (.items == null or (.items | type) == "array")' <<<"$cluster_list" >/dev/null \
     || fail 'ManagedCluster list response has no valid items field'
-  jq -e --arg id "$requested_cluster" --arg name "$cluster_name" \
-    'any((.items // [])[]; .id == $id and ($name == "" or .name == $name))' <<<"$cluster_list" >/dev/null \
-    || fail 'Requested cluster_id is not registered under the expected name; inspect hsctl list managedClusters --output json'
+  jq -e --argjson selector "$requested_selector" \
+    'any((.items // [])[]; . as $cluster | all($selector[]; . as $required | ($cluster.capabilities // []) | index($required) != null))' <<<"$cluster_list" >/dev/null \
+    || fail 'No registered ManagedCluster advertises all placement.selector labels; inspect hsctl list managedClusters --output json'
+  jq -r --argjson selector "$requested_selector" \
+    '(.items // [])[] as $cluster | select(all($selector[]; . as $required | ($cluster.capabilities // []) | index($required) != null)) | [$cluster.name // "", $cluster.id // ""] | @tsv' <<<"$cluster_list" >&2
   status '🔧' "Creating gateway $gateway_name"
   gateway_json="$("$hsctl_bin" create gateway --body "$request_file")" || fail 'Gateway creation failed'
 else
@@ -120,11 +119,17 @@ else
 fi
 gateway_id="$(jq -er '.id | select(type == "string" and length > 0)' <<<"$gateway_json")" || fail 'Gateway has no ID'
 if [[ -n "$request_file" ]]; then
-  desired_cluster="$(jq -r '.cluster_id' "$request_file")"
-  desired_release="$(jq -r '.release_id // empty' "$request_file")"
-  jq -e --arg cluster "$desired_cluster" --arg release "$desired_release" \
-    '(.cluster_id // "") == $cluster and ($release == "" or .release_id == $release)' <<<"$gateway_json" >/dev/null \
-    || fail 'Existing gateway placement or release differs from the requested gateway'
+  desired_selector="$(jq -c '.placement.selector' "$request_file")"
+  selected_cluster="$(jq -er '.cluster_id | select(type == "string" and length > 0)' <<<"$gateway_json")" \
+    || fail 'Gateway response has no resolved cluster_id'
+  if [[ -z "${cluster_list:-}" ]]; then
+    cluster_list="$("$hsctl_bin" list managedClusters --output json)" || fail 'Cannot list registered ManagedClusters'
+    jq -e 'has("items") and (.items == null or (.items | type == "array"))' <<<"$cluster_list" >/dev/null \
+      || fail 'ManagedCluster list response has no valid items field'
+  fi
+  jq -e --arg id "$selected_cluster" --argjson selector "$desired_selector" \
+    'any((.items // [])[]; . as $cluster | $cluster.id == $id and all($selector[]; . as $required | ($cluster.capabilities // []) | index($required) != null))' <<<"$cluster_list" >/dev/null \
+    || fail 'Gateway was resolved to a cluster that does not match the requested placement.selector'
 fi
 
 status '🔧' 'Waiting for gateway route and service-account readiness'
