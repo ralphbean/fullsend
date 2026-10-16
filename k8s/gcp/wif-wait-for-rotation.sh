@@ -20,9 +20,10 @@ initial_hash="$(printf '%s' "$initial_assertion" | sha256sum | cut -d' ' -f1)"
 printf '%s  %s\n' "$initial_hash" "$initial_hash_file" > "$initial_hash_file"
 unset initial_assertion
 
-# The runner refreshes the sandbox copy every four minutes. Wait for the
-# projected file itself to change and leave time for the inference request.
-deadline=$((SECONDS + 480))
+# The runner refreshes the sandbox copy every four minutes. A refresh can race
+# with kubelet rotation, so allow the next refresh tick plus a short margin.
+rotation_wait_seconds=780
+deadline=$((SECONDS + rotation_wait_seconds))
 while (( SECONDS < deadline )); do
   current_assertion="$(read_assertion)"
   current_hash="$(printf '%s' "$current_assertion" | sha256sum | cut -d' ' -f1)"
@@ -38,5 +39,5 @@ while (( SECONDS < deadline )); do
   sleep 5
 done
 
-echo 'Projected WIF assertion did not rotate within 480 seconds.' >&2
+echo "Projected WIF assertion did not rotate within ${rotation_wait_seconds} seconds." >&2
 exit 1

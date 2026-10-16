@@ -107,7 +107,7 @@ mv "$manifest.tmp" "$manifest"
 
 status '🚀' 'Starting the real Fullsend gateway demo with a projected Kubernetes identity token'
 k create -f "$manifest" >/dev/null
-status '⏳' "Waiting for Fullsend and HyperShell to complete inference before and after token rotation (Job $job_name; up to about 15 minutes)"
+status '⏳' "Waiting for Fullsend and HyperShell to complete inference before and after token rotation (Job $job_name; up to about 20 minutes)"
 
 deadline=$((SECONDS + 1850))
 result=''
