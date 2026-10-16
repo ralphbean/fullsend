@@ -10,7 +10,7 @@ usage() {
 gateway_name=''
 request_file=''
 service_account_name=''
-role=openshell-user
+role=openshell-admin
 api_url=''
 issuer_url=''
 token_file=''
@@ -192,7 +192,8 @@ else
   status '♻️' "Reusing service account $service_account_name"
 fi
 account_id="$(jq -er '.id | select(type == "string" and length > 0)' <<<"$account_json")" || fail 'Service account has no ID'
-[[ "$(jq -r '.role' <<<"$account_json")" == "$role" ]] || fail 'Service-account role differs from the requested role'
+account_role="$(jq -r '.role' <<<"$account_json")"
+[[ "$account_role" == "$role" ]] || fail "Service account $service_account_name has role $account_role; requested $role. Use a new name or recreate it with the requested role."
 if [[ -s "$credential_file" ]]; then
   [[ ! -L "$credential_file" && ! -L "$secret_file" ]] || fail 'Credential paths must not be symlinks'
   [[ "$(jq -r '.id' "$credential_file")" == "$account_id" ]] || fail 'Local credential belongs to another service account'
