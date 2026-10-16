@@ -81,8 +81,7 @@ k8s/kind/07-hypershell-build.sh
 export HYPERSHELL_API_URL='https://api.hyp2.infra.hypershell.app/'
 export HYPERSHELL_ISSUER_URL='https://keycloak.hyp2.infra.hypershell.app/realms/hypershell'
 export HYPERSHELL_GATEWAY_NAME='whatever'
-HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser \
-  --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"
+HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"
 export HYPERSHELL_CLUSTER_ID="$(HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl list managedClusters --output json | jq -er '.items[0].id')"
 mkdir -p k8s/.local/gateway
 cat > k8s/.local/gateway/request.json <<JSON

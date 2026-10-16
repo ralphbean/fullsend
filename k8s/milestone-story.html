@@ -339,8 +339,7 @@ LIMIT 10;'</code></pre></div>
 export HYPERSHELL_ISSUER_URL='https://keycloak.hyp2.infra.hypershell.app/realms/hypershell'
 export HYPERSHELL_GATEWAY_NAME="whatever"
 export SANDBOX_IMAGE='ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a'
-HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser \
-  --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"</code></pre><p>Use the first registered ManagedCluster's ID and write the gateway request file:</p><pre><code>export HYPERSHELL_CLUSTER_ID="$(HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl list managedClusters --output json | jq -er '.items[0].id')"
+HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"</code></pre><p>Use the first registered ManagedCluster's ID and write the gateway request file:</p><pre><code>export HYPERSHELL_CLUSTER_ID="$(HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl list managedClusters --output json | jq -er '.items[0].id')"
 mkdir -p k8s/.local/gateway
 cat &gt; k8s/.local/gateway/request.json &lt;&lt;JSON
 {
