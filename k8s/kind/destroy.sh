@@ -112,7 +112,7 @@ else
 
   # The cleanup Job runs inside kind and needs the same runner image that probe
   # and demo Jobs used. A reset can leave the image on the host but not in the
-  # node, so always load the resolved image before asking the cluster to use it.
+  # node, so ensure the resolved image is loaded before asking the cluster to use it.
   runner_image=''
   if [[ -s "$STATE_DIR/gateway-runner-image" ]]; then
     runner_image="$(cat "$STATE_DIR/gateway-runner-image")"
@@ -125,8 +125,12 @@ else
       printf '%s\n' "$runner_image" > "$STATE_DIR/gateway-runner-image"
     fi
     if podman image exists "$runner_image" >/dev/null 2>&1; then
-      status '🔧' "Loading gateway cleanup runner image $runner_image into kind"
-      kind load docker-image "$runner_image" --name "$KIND_NAME"
+      if kind_image_loaded "$runner_image"; then
+        status '✅' "Gateway cleanup runner image $runner_image is already loaded in kind"
+      else
+        status '🔧' "Loading gateway cleanup runner image $runner_image into kind"
+        kind load docker-image "$runner_image" --name "$KIND_NAME"
+      fi
     else
       status '🔧' "Gateway cleanup runner image $runner_image is missing locally; building it from this checkout"
       build_gateway_runner
