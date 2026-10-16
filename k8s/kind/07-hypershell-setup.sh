@@ -155,9 +155,31 @@ if [[ "$account_count" == 0 ]]; then
   [[ -z "$existing_secret_file" ]] || fail 'Cannot reuse a client secret when the named service account does not exist'
   [[ ! -e "$credential_file" && ! -e "$secret_file" ]] || fail 'Local credential already exists; inspect it before creating a new service account'
   status '🔧' "Creating service account $service_account_name"
-  "$hsctl_bin" create service-account --gateway-id "$gateway_id" --name "$service_account_name" \
-    --role "$role" --expires-in 30d --output-file "$credential_file" >/dev/null \
-    || fail 'Service-account creation failed; inspect the gateway before retrying'
+  create_attempt=1
+  create_max_attempts=8
+  create_delay=2
+  while true; do
+    if create_error="$("$hsctl_bin" create service-account --gateway-id "$gateway_id" --name "$service_account_name" \
+      --role "$role" --expires-in 30d --output-file "$credential_file" 2>&1 >/dev/null)"; then
+      break
+    fi
+
+    if [[ "$create_error" != *'API returned 409 (gateway_not_ready)'* ]]; then
+      printf '%s\n' "$create_error" >&2
+      fail 'Service-account creation failed; inspect the gateway before retrying'
+    fi
+
+    if (( create_attempt >= create_max_attempts )); then
+      printf '%s\n' "$create_error" >&2
+      fail "Gateway stayed unready for service-account provisioning after $create_max_attempts attempts"
+    fi
+
+    status '⏳' "Gateway is not ready for service-account provisioning; retry $((create_attempt + 1))/$create_max_attempts in ${create_delay}s"
+    sleep "$create_delay"
+    create_attempt=$((create_attempt + 1))
+    create_delay=$((create_delay * 2))
+    if (( create_delay > 30 )); then create_delay=30; fi
+  done
   account_json="$(jq -c '.' "$credential_file")"
 else
   account_json="$(jq -c --arg name "$service_account_name" '(.items // [])[] | select(.name == $name and .status != "revoked" and .status != "expired")' <<<"$account_list")"
