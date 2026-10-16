@@ -47,7 +47,9 @@ openshell_name="${openshell_name:-$gateway_name}"
 [[ "$openshell_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || fail 'OpenShell registration name contains unsupported characters'
 [[ "$role" == openshell-user || "$role" == openshell-admin ]] || fail 'Unsupported service-account role'
 [[ "$(basename "$openshell_config")" == openshell ]] || fail '--openshell-config must name an openshell directory'
-[[ -z "$request_file" || ( -s "$request_file" && ! -L "$request_file" ) ]] || fail 'Gateway request file is missing or a symlink'
+if [[ -n "$request_file" && ( -e "$request_file" || -L "$request_file" ) ]]; then
+  [[ -s "$request_file" && ! -L "$request_file" ]] || fail 'Gateway request file is empty or a symlink'
+fi
 if [[ -n "$existing_secret_file" ]]; then
   [[ -s "$existing_secret_file" && ! -L "$existing_secret_file" ]] || fail 'Existing client-secret file is missing, empty, or a symlink'
   [[ "$(stat -c '%a' "$existing_secret_file")" == 600 ]] || fail 'Existing client-secret file must have mode 600'
@@ -55,7 +57,7 @@ fi
 if [[ ! -s "$config_file" && -z "$token_file" ]]; then
   [[ -n "$api_url" && -n "$issuer_url" ]] || fail 'No management login found. Supply --api-url and --issuer-url for device login, or --token-file with --api-url.'
 fi
-if [[ -n "$request_file" ]]; then
+if [[ -n "$request_file" && -s "$request_file" ]]; then
   jq -e --arg name "$gateway_name" \
     '.name == $name and (.cluster_id | type == "string" and length > 0) and ((has("release_id") | not) or (.release_id | type == "string"))' \
     "$request_file" >/dev/null \
@@ -104,7 +106,15 @@ jq -e 'has("items") and (.items == null or (.items | type) == "array")' <<<"$gat
 gateway_count="$(jq --arg name "$gateway_name" '[(.items // [])[] | select(.name == $name)] | length' <<<"$gateway_list")"
 [[ "$gateway_count" -le 1 ]] || fail "Multiple gateways named $gateway_name; refusing to choose one"
 if [[ "$gateway_count" == 0 ]]; then
-  [[ -n "$request_file" ]] || fail "Gateway $gateway_name is absent; supply --gateway-request with a registered ManagedCluster ID"
+  if [[ -z "$request_file" || ! -s "$request_file" ]]; then
+    status 'ℹ️' "Gateway $gateway_name is not registered; listing registered ManagedClusters so you can prepare its request"
+    cluster_list="$("$hsctl_bin" list managedClusters --output json)" || fail 'Cannot list registered ManagedClusters'
+    jq -e 'has("items") and (.items == null or (.items | type) == "array")' <<<"$cluster_list" >/dev/null \
+      || fail 'ManagedCluster list response has no valid items field'
+    jq -r '(.items // [])[] | [.name // "", .id // ""] | @tsv' <<<"$cluster_list" >&2
+    request_path="${request_file:-$LOCAL_DIR/gateway/request.json}"
+    fail "Create $request_path with the gateway name and a registered cluster_id from the list above, then rerun with --gateway-request"
+  fi
   requested_cluster="$(jq -r '.cluster_id' "$request_file")"
   cluster_list="$("$hsctl_bin" list managedClusters --output json)" || fail 'Cannot list registered ManagedClusters'
   jq -e 'has("items") and (.items == null or (.items | type) == "array")' <<<"$cluster_list" >/dev/null \
@@ -115,6 +125,10 @@ if [[ "$gateway_count" == 0 ]]; then
   status '🔧' "Creating gateway $gateway_name"
   gateway_json="$("$hsctl_bin" create gateway --body "$request_file")" || fail 'Gateway creation failed'
 else
+  if [[ -n "$request_file" && ! -s "$request_file" ]]; then
+    status 'ℹ️' 'The named gateway already exists; reusing it without the optional creation request'
+    request_file=''
+  fi
   status '♻️' "Reusing gateway $gateway_name"
   gateway_json="$(jq -c --arg name "$gateway_name" '(.items // [])[] | select(.name == $name)' <<<"$gateway_list")"
 fi

@@ -74,7 +74,22 @@ The live setup extends the existing WIF provider and inference service account f
 
 The script requires the gateway to reach `Running` with a route before setting up its service account. If HyperShell reports `Degraded` or `Failed`, inspect both its `status` and provisioning conditions in the console. Conditions may all read `Complete` while the deployment status reports unavailable replicas. Restore the gateway before retrying setup or cleanup.
 
-Supply the management API URL and OIDC issuer from your HyperShell administrator. The managed console's `/api/*` route requires a browser session and does not forward a CLI bearer token, so its URL is not an `hsctl --url` substitute; use the direct management API origin. For a new gateway, place a JSON request under `k8s/.local/gateway/` with its `name` and a nonempty `cluster_id` from `hsctl list managedClusters --output json`. The current managed API requires a registered ManagedCluster and rejects empty `cluster_id`; the pinned CLI's hub-default comment does not apply to this deployment. Pass `--cluster-name` to verify that the ID still maps to the expected ManagedCluster before creation. The current managed API also rejects `release_id` in gateway creation requests, despite that field appearing in the pinned `hsctl` CLI. Include `"route":"{\"enabled\":true}"` when following the console's gateway creation request. Omit `--gateway-request` to reuse an existing gateway.
+Supply the management API URL and OIDC issuer from your HyperShell administrator. The managed console's `/api/*` route requires a browser session and does not forward a CLI bearer token, so its URL is not an `hsctl --url` substitute; use the direct management API origin. `07-hypershell-setup.sh` builds the pinned `hsctl` and handles device login. For a new gateway, if the request file is missing, it lists registered ManagedCluster names and IDs and stops before creating the gateway. Use the ID matching your `--cluster-name` value to create the request file:
+
+```sh
+export HYPERSHELL_CLUSTER_ID='ID_FROM_REGISTERED_MANAGEDCLUSTER_LIST'
+mkdir -p k8s/.local/gateway
+cat > k8s/.local/gateway/request.json <<JSON
+{
+  "name": "$HYPERSHELL_GATEWAY_NAME",
+  "cluster_id": "$HYPERSHELL_CLUSTER_ID",
+  "route": "{\"enabled\":true}"
+}
+JSON
+jq . k8s/.local/gateway/request.json
+```
+
+The current managed API requires a registered ManagedCluster and rejects empty `cluster_id`; the pinned CLI's hub-default comment does not apply to this deployment. Pass `--cluster-name` to verify that the ID still maps to the expected ManagedCluster before creation. The current managed API also rejects `release_id` in gateway creation requests, despite that field appearing in the pinned `hsctl` CLI. Omit `--gateway-request` to reuse an existing gateway.
 
 With console access only, the first run uses an interactive device login; `hsctl` then caches a refresh token in the ignored local config. For unattended first use, supply a private management bearer token file via `--token-file`. A gateway service account cannot authenticate to the management API. `openshell-user` also needs membership in the intended gateway workspace; choose `--role openshell-admin` only if that broader access is intended. For a console-created service account whose one-time credential was saved as a raw mode-600 secret, pass `--existing-client-secret-file` and, if its OpenShell registration has a separate local name, `--openshell-name`.
 
