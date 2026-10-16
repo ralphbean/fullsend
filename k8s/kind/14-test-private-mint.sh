@@ -63,11 +63,15 @@ mint_and_check() {
   unset github_token
   rm -f /tmp/mint-response.json
 }
+printf '%s\n' 'Starting initial repository-scoped GitHub token exchange.'
 mint_and_check
+printf '%s\n' 'Initial exchange succeeded; the repository and permissions match the expected scope.'
+printf '%s\n' 'Waiting for projected Kubernetes token rotation (up to 15 minutes).'
 deadline=$((SECONDS + 900))
 while (( SECONDS < deadline )); do
   current_hash="$(sha256sum "$token_file" | cut -d' ' -f1)"
   if [[ "$current_hash" != "$initial_hash" ]]; then
+    printf '%s\n' 'Projected Kubernetes token rotated; checking the repository-scoped exchange again.'
     mint_and_check
     printf '%s\n' 'Projected Kubernetes token rotated; second repository-scoped GitHub exchange succeeded.'
     exit 0
@@ -85,9 +89,22 @@ jq -n --arg name "$job_name" --arg image "$pod_image" --arg sa "$sa_name" --arg 
   | k create -f - >/dev/null
 status '⏳' "Waiting for repository-scoped mint and projected-token rotation (Job $job_name)"
 job_result=''
+last_log_line_count=0
+show_new_job_logs() {
+  local log_output="$1" index
+  local -a log_lines=()
+  [[ -n "$log_output" ]] || return 0
+  mapfile -t log_lines <<< "$log_output"
+  for (( index=last_log_line_count; index<${#log_lines[@]}; index++ )); do
+    [[ -n "${log_lines[$index]}" ]] && status 'ℹ️' "Mint probe: ${log_lines[$index]}"
+  done
+  last_log_line_count=${#log_lines[@]}
+}
 deadline=$((SECONDS + 1200))
 while [[ -z "$job_result" ]] && (( SECONDS < deadline )); do
   job_json="$(k -n fullsend-runner get "job/$job_name" -o json)" || break
+  job_logs="$(k -n fullsend-runner logs "job/$job_name" --timestamps=true 2>/dev/null)" || job_logs=''
+  show_new_job_logs "$job_logs"
   if jq -e '(.status.conditions // []) | any(.[]; .type == "Complete" and .status == "True")' <<<"$job_json" >/dev/null; then
     job_result=complete
   elif jq -e '(.status.conditions // []) | any(.[]; .type == "Failed" and .status == "True")' <<<"$job_json" >/dev/null; then
@@ -96,11 +113,13 @@ while [[ -z "$job_result" ]] && (( SECONDS < deadline )); do
     sleep 10
   fi
 done
+job_log_file="$STATE_DIR/mint-probe-$job_name.log"
+job_logs="$(k -n fullsend-runner logs "job/$job_name" --timestamps=true 2>&1)" || true
+printf '%s\n' "$job_logs" > "$job_log_file"
+show_new_job_logs "$job_logs"
 if [[ "$job_result" != complete ]]; then
-  k -n fullsend-runner logs "job/$job_name" > "$STATE_DIR/mint-probe-$job_name.log" 2>&1 || true
   k -n fullsend-runner delete "job/$job_name" --wait=true >/dev/null 2>&1 || true
-  fail "Mint probe $job_result; redacted runner output: $STATE_DIR/mint-probe-$job_name.log"
+  fail "Mint probe $job_result; redacted runner output: $job_log_file"
 fi
-k -n fullsend-runner logs "job/$job_name" > "$STATE_DIR/mint-probe-$job_name.log"
 k -n fullsend-runner delete "job/$job_name" --wait=true >/dev/null
-status '✅' "Scoped GitHub App token worked before and after projected token rotation; result: $STATE_DIR/mint-probe-$job_name.log"
+status '✅' "Scoped GitHub App token worked before and after projected token rotation; result: $job_log_file"
