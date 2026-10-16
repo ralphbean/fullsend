@@ -225,7 +225,7 @@ registration="$openshell_config/gateways/$openshell_name/metadata.json"
 if [[ -e "$registration" ]]; then
   jq -e --arg endpoint "$gateway_endpoint" --arg issuer "$issuer" --arg client "$client_id" --arg audience "$audience" \
     '.auth_mode == "oidc" and .gateway_endpoint == $endpoint and .oidc_issuer == $issuer and .oidc_client_id == $client and .oidc_audience == $audience' \
-    "$registration" >/dev/null || fail 'Existing OpenShell registration differs; inspect it before changing it'
+    "$registration" >/dev/null || fail "Existing OpenShell registration at $registration differs; inspect it before changing it"
 else
   status '🔧' 'Registering gateway with OpenShell'
   XDG_CONFIG_HOME="$(dirname "$openshell_config")" OPENSHELL_OIDC_CLIENT_SECRET="$(cat "$secret_file")" \
