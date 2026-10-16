@@ -153,7 +153,12 @@ credential_file="$LOCAL_DIR/gateway/$gateway_name-$service_account_name-credenti
 secret_file="$LOCAL_DIR/gateway/$gateway_name-$service_account_name-client-secret"
 if [[ "$account_count" == 0 ]]; then
   [[ -z "$existing_secret_file" ]] || fail 'Cannot reuse a client secret when the named service account does not exist'
-  [[ ! -e "$credential_file" && ! -e "$secret_file" ]] || fail 'Local credential already exists; inspect it before creating a new service account'
+  existing_local_credentials=()
+  [[ ! -e "$credential_file" ]] || existing_local_credentials+=("$credential_file")
+  [[ ! -e "$secret_file" ]] || existing_local_credentials+=("$secret_file")
+  if (( ${#existing_local_credentials[@]} > 0 )); then
+    fail "Local credential already exists at: ${existing_local_credentials[*]}; inspect it before creating a new service account"
+  fi
   status '🔧' "Creating service account $service_account_name"
   create_attempt=1
   create_max_attempts=8
