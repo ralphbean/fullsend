@@ -70,13 +70,19 @@ The live setup extends the existing WIF provider and inference service account f
 
 ## HyperShell gateway setup and probe
 
-`07-hypershell-setup.sh` builds `hsctl` from a pinned HyperShell source commit, then creates or reuses a gateway and a named gateway service account through the management API. It saves the one-time credential under ignored `k8s/.local/gateway/`, registers the gateway with OpenShell, and prints the bundle and secret paths for the probe. Exact-name checks prevent repeat runs from creating duplicates. An existing service account can be reused only if its original credential bundle is present locally; its secret cannot be retrieved from the API. The script never deletes a shared gateway or service account. It is separate from `deploy.sh`, so a kind reset never provisions or removes external resources.
+`07-hypershell-build.sh` builds the pinned `hsctl` CLI before gateway setup, so you can use it to log in and inspect registered clusters. `07-hypershell-setup.sh` also runs the builder when `hsctl` is missing or was built from a different pinned source revision, then creates or reuses a gateway and a named gateway service account through the management API. It saves the one-time credential under ignored `k8s/.local/gateway/`, registers the gateway with OpenShell, and prints the bundle and secret paths for the probe. Exact-name checks prevent repeat runs from creating duplicates. An existing service account can be reused only if its original credential bundle is present locally; its secret cannot be retrieved from the API. The script never deletes a shared gateway or service account. It is separate from `deploy.sh`, so a kind reset never provisions or removes external resources.
 
 The script requires the gateway to reach `Running` with a route before setting up its service account. If HyperShell reports `Degraded` or `Failed`, inspect both its `status` and provisioning conditions in the console. Conditions may all read `Complete` while the deployment status reports unavailable replicas. Restore the gateway before retrying setup or cleanup.
 
-Supply the management API URL and OIDC issuer from your HyperShell administrator. The managed console's `/api/*` route requires a browser session and does not forward a CLI bearer token, so its URL is not an `hsctl --url` substitute; use the direct management API origin. `07-hypershell-setup.sh` builds the pinned `hsctl` and handles device login. For a new gateway, if the request file is missing, it lists registered ManagedCluster names and IDs and stops before creating the gateway. Use the first registered ManagedCluster's ID to create the request file:
+For this PoC's HyperShell environment, `HYPERSHELL_API_URL` is the direct management API base URL (not the browser console URL), and `HYPERSHELL_ISSUER_URL` is the Keycloak realm that performs `hsctl` device login. Use these exact values:
 
 ```sh
+k8s/kind/07-hypershell-build.sh
+export HYPERSHELL_API_URL='https://api.hyp2.infra.hypershell.app/'
+export HYPERSHELL_ISSUER_URL='https://keycloak.hyp2.infra.hypershell.app/realms/hypershell'
+export HYPERSHELL_GATEWAY_NAME='whatever'
+HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl login --no-browser \
+  --url "$HYPERSHELL_API_URL" --issuer-url "$HYPERSHELL_ISSUER_URL"
 export HYPERSHELL_CLUSTER_ID="$(HYPERSHELL_CONFIG=k8s/.local/gateway/hsctl-config.json k8s/.local/bin/hsctl list managedClusters --output json | jq -er '.items[0].id')"
 mkdir -p k8s/.local/gateway
 cat > k8s/.local/gateway/request.json <<JSON

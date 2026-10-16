@@ -2,7 +2,6 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 script_start "$0"
-HYPERSHELL_HSCTL_COMMIT=c17b8199916b0ee5b5a255d9928b3bd051efdbc9
 
 usage() {
   fail "Usage: $0 --gateway-name NAME --service-account-name NAME [--gateway-request JSON] [--cluster-name NAME] [--api-url URL --issuer-url URL | --token-file FILE | --config FILE] [--role openshell-user|openshell-admin] [--existing-client-secret-file FILE] [--openshell-name NAME] [--hsctl-bin FILE] [--openshell-config DIR]"
@@ -63,28 +62,15 @@ if [[ -n "$request_file" && -s "$request_file" ]]; then
     "$request_file" >/dev/null \
     || fail 'Gateway request must contain matching name and a registered ManagedCluster ID in cluster_id'
 fi
-for tool in git go jq openshell; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
+for tool in jq openshell; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
 [[ "$(openshell --version)" == 'openshell 0.1.2-rhaiv.0' ]] || fail 'OpenShell must be 0.1.2-rhaiv.0'
 
 # Keep management tokens and the one-time service-account credential outside Git.
 umask 077
 mkdir -p "$LOCAL_DIR/gateway"
 if [[ -z "$hsctl_bin" ]]; then
-  source_dir="$LOCAL_DIR/hsctl-src"
+  "$K8S_ROOT/kind/07-hypershell-build.sh"
   hsctl_bin="$LOCAL_DIR/bin/hsctl"
-  if [[ ! -x "$hsctl_bin" ]]; then
-    if [[ ! -d "$source_dir/.git" ]]; then
-      status '🔧' 'Fetching pinned HyperShell source for hsctl'
-      git clone --filter=blob:none --sparse https://github.com/openshift-online/hypershell.git "$source_dir"
-      git -C "$source_dir" sparse-checkout set components/cli
-    fi
-    git -C "$source_dir" fetch origin "$HYPERSHELL_HSCTL_COMMIT"
-    git -C "$source_dir" checkout --detach "$HYPERSHELL_HSCTL_COMMIT"
-    [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$HYPERSHELL_HSCTL_COMMIT" ]] || fail 'hsctl source revision mismatch'
-    mkdir -p "$(dirname "$hsctl_bin")"
-    status '🔧' 'Building pinned hsctl'
-    (cd "$source_dir/components/cli" && go build -o "$hsctl_bin" ./cmd/hsctl)
-  fi
 fi
 [[ -x "$hsctl_bin" ]] || fail "hsctl binary missing: $hsctl_bin"
 export HYPERSHELL_CONFIG="$config_file"
